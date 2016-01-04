@@ -1,0 +1,9 @@
+Not a complete list of changes.
+include/mupdf/fitz/colorspace.h - rgb -> grayscale coefficients. Add Mono colorspace conversions. Add SlowCMYK for more accurate CMYK->Gray conversion.
+include/mupdf/fitz/context.h - Increase stack size to 32768.   App crashes on large pdfs otherwise.
+fitz/colorspace.c - rgb -> grayscale coefficients. Add Mono colorspace conversions. Add SlowCMYK for more accurate CMYK->Gray conversion.
+fitz/draw_affine.c - Always set interpolation to 0 when enlarging Black/White images.  Clearer text this way.
+fitz/draw_device.c - Error Diffuse images and shading areas for Black/White.  Force text < .8 to black.
+fitz/image.c - Pad truncated images with white (255) vs black (0) image.
+fitz/filter-fax.c - Allow partial decoding of 1d and 2d images.
+fitz/font.c - Disable grid fitting - slow and high memory consumption on certain docs. Crashes test file.
