@@ -38,7 +38,7 @@ int MuPDFClass::LoadPdf(char* filename, char* password)
 	}
 	fz_catch(_ctx)
 	{
-		fz_throw(_ctx, FZ_ERROR_GENERIC, "cannot open document: %s", filename);
+		return -1;
 	}
 	return -1;
 }
@@ -57,7 +57,7 @@ int MuPDFClass::LoadPdfFromStream(unsigned char* buffer, int bufferSize, char* p
 	}
 	fz_catch(_ctx)
 	{
-		fz_throw(_ctx, FZ_ERROR_GENERIC, "cannot open stream!");
+		return -1;
 	}
 	return -1;
 }
