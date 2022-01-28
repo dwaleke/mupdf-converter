@@ -1169,10 +1169,6 @@
       <Project>{5edcf4fd-0291-4fb9-8d96-d58957ca5e3c}</Project>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
-    <ProjectReference Include="libtesseract.vcxproj">
-      <Project>{ac0bda38-89b9-4703-a77d-8049ac3a0d04}</Project>
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-    </ProjectReference>
     <ProjectReference Include="libextract.vcxproj">
       <Project>{da38ca0b-89b9-4703-a77d-8049ac3a0d04}</Project>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
