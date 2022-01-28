@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "UOictUR1q7W8M/nnlo84l9w7jg53mXzpehAMXRxYF3bZanpmyRGlOMQYk7+qnP++CP6RszZ6cMQnfP2NNpGeEA==",
+  "dgSpecHash": "FkGUSYRSE8O2+D6aVaGV/gTL21aERMDxaNQwNXKiHI1BrxKJtZyvMjVwRucpjpCepAnSktM2+XpFoCZ5Pta11Q==",
   "success": true,
-  "projectFilePath": "C:\\Users\\dwalme\\source\\repos\\mupdf-converter\\MuPDF\\MuPDF.csproj",
+  "projectFilePath": "C:\\Users\\dwalme\\Source\\Repos\\mupdf-converter\\MuPDF\\MuPDF.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\dwalme\\.nuget\\packages\\microsoft.win32.systemevents\\6.0.0\\microsoft.win32.systemevents.6.0.0.nupkg.sha512",
     "C:\\Users\\dwalme\\.nuget\\packages\\system.drawing.common\\6.0.0\\system.drawing.common.6.0.0.nupkg.sha512",

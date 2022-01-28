@@ -1321,7 +1321,7 @@ fz_draw_fill_image(fz_context *ctx, fz_device *devp, fz_image *image, const fz_m
 			if ((pixmap->colorspace == fz_device_gray(ctx) && model == fz_device_rgb(ctx)) ||
 				(pixmap->colorspace == fz_device_gray(ctx) && model == fz_device_bgr(ctx)) ||
 				(pixmap->colorspace == fz_device_mono(ctx) && model == fz_device_rgb(ctx)) ||
-				(pixmap->colorspace == fz_device_mono(ctx) && model == fz_device_rgb(ctx))
+				(pixmap->colorspace == fz_device_mono(ctx) && model == fz_device_bgr(ctx))
 				)
 			{
 				/* We have special case rendering code for gray -> rgb/bgr */
