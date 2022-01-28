@@ -292,7 +292,6 @@ namespace MuPDFLib
             Initialize();
         }
 
-        [System.Runtime.ExceptionServices.HandleProcessCorruptedStateExceptions]
         public void Initialize()
         {
             if (Environment.Is64BitProcess)
@@ -327,7 +326,6 @@ namespace MuPDFLib
             Dispose(true);
         }
 
-        [System.Runtime.ExceptionServices.HandleProcessCorruptedStateExceptions]
         protected virtual void Dispose(bool bDisposing)
         {
             if (this.m_pNativeObject != IntPtr.Zero)
@@ -352,7 +350,6 @@ namespace MuPDFLib
             Dispose(false);
         }
 
-        [System.Runtime.ExceptionServices.HandleProcessCorruptedStateExceptions]
         public unsafe Bitmap GetBitmap(int width, int height, float dpix, float dpiy, int rotation, RenderType type, bool rotateLandscapePages, bool convertToLetter, int maxSize)
         {
             Bitmap bitmap2 = null;
@@ -438,7 +435,6 @@ namespace MuPDFLib
             return bitmap2;
         }
 
-        [System.Runtime.ExceptionServices.HandleProcessCorruptedStateExceptions]
         public unsafe BitmapSource GetBitmapSource(int width, int height, float dpix, float dpiy, int rotation, RenderType type, bool rotateLandscapePages, bool convertToLetter, int maxSize)
         {
             WriteableBitmap write = null;
@@ -527,7 +523,6 @@ namespace MuPDFLib
             return write;
         }
 
-        [System.Runtime.ExceptionServices.HandleProcessCorruptedStateExceptions]
         public unsafe WriteableBitmap GetWriteableBitmap(int width, int height, float dpix, float dpiy, int rotation, RenderType type, bool rotateLandscapePages, bool convertToLetter, int maxSize)
         {
             WriteableBitmap write = null;
@@ -616,7 +611,6 @@ namespace MuPDFLib
             return write;
         }
 
-        [System.Runtime.ExceptionServices.HandleProcessCorruptedStateExceptions]
         public unsafe byte[] GetPixels(ref int width, ref int height, float dpix, float dpiy, int rotation, RenderType type, bool rotateLandscapePages, bool convertToLetter, out uint cbStride, int maxSize)
         {
             byte[] output = null;
