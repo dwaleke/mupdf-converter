@@ -3,3 +3,12 @@
 ################################################################################
 
 /.vs
+/pub/platform/win32/Release
+/pub/platform/win32/Disabled
+/pub/platform/win32/Debug
+/pub/platform/win32/Win32
+/pub/platform/win32/x64
+/MuPDF/bin
+/MuPDF/obj
+/MuPDFlib/Debug
+/MuPDFlib/Release
