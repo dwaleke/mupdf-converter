@@ -8,6 +8,6 @@ The MuPDF code contained in this project is based off of the code checked in at 
 
 The MuPDF library itself is wrapped in a C++ object. Why? Debugging P/Invoke code in C# is not fun. By keeping the core of the library in C++, changes to MuPDF library are abstracted and the P/Invoke code rarely ever needs to change (unless adding functionality).
 
-It was also a design decision to always build and make available 32-bit and 64-bit Dlls. Since mostly anywhere you may want to run this will probably have a mix of those machine types. Eventually 32-bit code will be dropped. There is a measurable performance increase running the 64-bit binaries on a 64-bit machine.
+There is a measurable performance increase running the 64-bit binaries on a 64-bit machine.
 
 This project has been tested in a multi-threaded conversion environment and has already successfully converted millions of Pdf documents to Tiff format. This library is also used in a C# WPF Image Viewer application used to view documents of multiple types.
