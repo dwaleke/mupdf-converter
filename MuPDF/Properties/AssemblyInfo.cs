@@ -8,9 +8,9 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyTitle("MuPDF .NET Wrapper")]
 [assembly: AssemblyDescription("")]
 [assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCompany("Quicken Loans")]
+[assembly: AssemblyCompany("")]
 [assembly: AssemblyProduct("MuPDF .NET Wrapper")]
-[assembly: AssemblyCopyright("Copyright © Quicken Loans 2011-2012")]
+[assembly: AssemblyCopyright("")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 

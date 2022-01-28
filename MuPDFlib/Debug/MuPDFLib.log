@@ -1,0 +1,3 @@
+﻿     Creating library C:\Users\dwalme\source\repos\mupdf-converter\MuPDFlib\Debug\MuPDFLib-x64.lib and object C:\Users\dwalme\source\repos\mupdf-converter\MuPDFlib\Debug\MuPDFLib-x64.exp
+LINK : warning LNK4075: ignoring '/LARGEADDRESSAWARE:NO' due to '/DLL' specification
+  MuPDFLib.vcxproj -> C:\Users\dwalme\source\repos\mupdf-converter\MuPDFlib\Debug\MuPDFLib-x64.dll
