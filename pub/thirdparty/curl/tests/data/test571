@@ -78,12 +78,12 @@ lib571
 RTSP RTP Interleaving Test
 </name>
 <command>
-rtsp://%HOSTIP:%RTSPPORT/571 log/protofile.txt
+rtsp://%HOSTIP:%RTSPPORT/571 log/protofile571.txt
 </command>
 </client>
 
 <verify>
-<stdout mode="text">
+<stdout>
 RTP: message size 10, channel 1
 RTP: message size 500, channel 0
 RTP: message size 196, channel 0
@@ -99,10 +99,9 @@ RTP: message size 85, channel 0
 RTP: message size 24, channel 1
 </stdout>
 
-<file name="log/protofile.txt">
+<file name="log/protofile571.txt">
 $99
 </file>
 </verify>
 
 </testcase>
-

@@ -1,4 +1,4 @@
-.TH jbig2dec 1 "2014 Oct 31" "Version 0.12" "jbig2dec Manual"
+.TH jbig2dec 1 "2020 March 11" "Version 0.19" "jbig2dec Manual"
 
 .SH NAME
 jbig2dec \- File format converter specialized in JBIG2 decoding
@@ -23,7 +23,7 @@ argument it is interpreted as a JBIG2 file stream, with either
 sequential or random-access organization.
 
 When passed two stream arguments, they are interpreted as the
-global and page-specific portions of an embedded organzation,
+global and page-specific portions of an embedded organization,
 as used in PDF. If a particular page references no global
 segment stream, /dev/null can be passed for the
 .I global-stream
@@ -32,39 +32,46 @@ argument to request the embedded parser.
 .SH OPTIONS
 The options are as follows:
 .TP
-.BI -o " file"
+.BR -e ", " --embedded
+Expect embedded bit stream without file header.
+.TP
+.BI -o " file" ", --output" " file"
 Store the decoded output in
 .IR file .
 Defaults to the input with a different extension.
 Set to \fI-\fR for standard output.
 .TP
-.BI -t " type"
+.BI -t " type" ", --format" " type"
 Force a particular output file format. Supported are \fIpng\fR and
 \fIpbm\fR.
 .TP
-.BR -d " or " --dump
+.BR -d ", " --dump
 Print the structure of the JBIG2 file rather than explicitly decoding it.
 .TP
-.BR --hash
+.BR -m ", " --hash
 Print a hash of the decoded document.
 .TP
-.BR -q " or " --quiet
+.BR -q ", " --quiet
 Suppress warnings and other diagnostic output.
 .TP
-.BR -v " or " --verbose
+.BR -v ", " --verbose
 Report additional information about the decoding process.
 Pass just \fB-v\fR for information about the file as it's being decoded.
 This is the same as \fB--verbose=2\fR.
 Pass \fB--verbose=3\fR or higher for debugging information.
 .TP
-.BR --version
+.BR -V ", " --version
 Show program version information.
 .TP
-.BR -h " or " --help
+.BR -h ", " --help
 Show usage summary.
 
-.SH AUTHOR
-jbig2-dev <jbig2-dev@ghostscript.com>
-This manpage was initially written by Sebastian Rasmussen
-<sebras@hotmail.com> for jbig2dec and the Debian Project.
+.SH REPORTING BUGS
+Report bugs at https://bugs.ghostscript.com
 
+Contact the developers at the IRC channel #ghostscript at freenode.net
+or via the mailing list <gs-devel@ghostscript.com>.
+
+.SH AUTHOR
+This manpage was initially written by Sebastian Rasmussen
+<sebras@gmail.com> for jbig2dec and the Debian Project.

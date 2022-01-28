@@ -9,22 +9,26 @@
 
 static const char *astname[] = {
 #include "astnames.h"
+NULL
 };
 
 static const char *opname[] = {
 #include "opnames.h"
+NULL
 };
+
+static int minify = 0;
 
 const char *jsP_aststring(enum js_AstType type)
 {
-	if (type < nelem(astname))
+	if (type < nelem(astname)-1)
 		return astname[type];
 	return "<unknown>";
 }
 
 const char *jsC_opcodestring(enum js_OpCode opcode)
 {
-	if (opcode < nelem(opname))
+	if (opcode < nelem(opname)-1)
 		return opname[opcode];
 	return "<unknown>";
 }
@@ -32,6 +36,7 @@ const char *jsC_opcodestring(enum js_OpCode opcode)
 static int prec(enum js_AstType type)
 {
 	switch (type) {
+	case AST_IDENTIFIER:
 	case EXP_IDENTIFIER:
 	case EXP_NUMBER:
 	case EXP_STRING:
@@ -138,15 +143,34 @@ static void ps(const char *s)
 	fputs(s, stdout);
 }
 
+static void pn(int n)
+{
+	printf("%d", n);
+}
+
 static void in(int d)
 {
-	while (d-- > 0)
-		putchar('\t');
+	if (minify < 1)
+		while (d-- > 0)
+			putchar('\t');
 }
 
 static void nl(void)
 {
-	putchar('\n');
+	if (minify < 2)
+		putchar('\n');
+}
+
+static void sp(void)
+{
+	if (minify < 1)
+		putchar(' ');
+}
+
+static void comma(void)
+{
+	putchar(',');
+	sp();
 }
 
 /* Pretty-printed Javascript syntax */
@@ -164,67 +188,79 @@ static void pargs(int d, js_Ast *list)
 		pexpi(d, COMMA, list->a);
 		list = list->b;
 		if (list)
-			ps(", ");
+			comma();
 	}
 }
 
 static void parray(int d, js_Ast *list)
 {
-	ps("[");
+	pc('[');
 	while (list) {
 		assert(list->type == AST_LIST);
 		pexpi(d, COMMA, list->a);
 		list = list->b;
 		if (list)
-			ps(", ");
+			comma();
 	}
-	ps("]");
+	pc(']');
 }
 
 static void pobject(int d, js_Ast *list)
 {
-	ps("{");
+	pc('{');
+	if (list) {
+		nl();
+		in(d+1);
+	}
 	while (list) {
 		js_Ast *kv = list->a;
 		assert(list->type == AST_LIST);
 		switch (kv->type) {
+		default: break;
 		case EXP_PROP_VAL:
-			pexpi(d, COMMA, kv->a);
-			ps(": ");
-			pexpi(d, COMMA, kv->b);
+			pexpi(d+1, COMMA, kv->a);
+			pc(':'); sp();
+			pexpi(d+1, COMMA, kv->b);
 			break;
 		case EXP_PROP_GET:
 			ps("get ");
-			pexpi(d, COMMA, kv->a);
-			ps("() {\n");
-			pstmlist(d, kv->c);
-			in(d); ps("}");
+			pexpi(d+1, COMMA, kv->a);
+			ps("()"); sp(); pc('{'); nl();
+			pstmlist(d+1, kv->c);
+			in(d+1); pc('}');
 			break;
 		case EXP_PROP_SET:
 			ps("set ");
-			pexpi(d, COMMA, kv->a);
-			ps("(");
-			pargs(d, kv->b);
-			ps(") {\n");
-			pstmlist(d, kv->c);
-			in(d); ps("}");
+			pexpi(d+1, COMMA, kv->a);
+			pc('(');
+			pargs(d+1, kv->b);
+			pc(')'); sp(); pc('{'); nl();
+			pstmlist(d+1, kv->c);
+			in(d+1); pc('}');
 			break;
 		}
 		list = list->b;
-		if (list)
-			ps(", ");
+		if (list) {
+			pc(',');
+			nl();
+			in(d+1);
+		} else {
+			nl();
+			in(d);
+		}
 	}
-	ps("}");
+	pc('}');
 }
 
 static void pstr(const char *s)
 {
 	static const char *HEX = "0123456789ABCDEF";
 	Rune c;
-	pc('"');
+	pc(minify ? '\'' : '"');
 	while (*s) {
 		s += chartorune(&c, s);
 		switch (c) {
+		case '\'': ps("\\'"); break;
 		case '"': ps("\\\""); break;
 		case '\\': ps("\\\\"); break;
 		case '\b': ps("\\b"); break;
@@ -244,13 +280,18 @@ static void pstr(const char *s)
 			}
 		}
 	}
-	pc('"');
+	pc(minify ? '\'' : '"');
 }
 
 static void pregexp(const char *prog, int flags)
 {
 	pc('/');
-	ps(prog);
+	while (*prog) {
+		if (*prog == '/')
+			pc('\\');
+		pc(*prog);
+		++prog;
+	}
 	pc('/');
 	if (flags & JS_REGEXP_G) pc('g');
 	if (flags & JS_REGEXP_I) pc('i');
@@ -260,7 +301,9 @@ static void pregexp(const char *prog, int flags)
 static void pbin(int d, int p, js_Ast *exp, const char *op)
 {
 	pexpi(d, p, exp->a);
+	sp();
 	ps(op);
+	sp();
 	pexpi(d, p, exp->b);
 }
 
@@ -273,8 +316,12 @@ static void puna(int d, int p, js_Ast *exp, const char *pre, const char *suf)
 
 static void pexpi(int d, int p, js_Ast *exp)
 {
-	int tp = prec(exp->type);
-	int paren = 0;
+	int tp, paren;
+
+	if (!exp) return;
+
+	tp = prec(exp->type);
+	paren = 0;
 	if (tp < p) {
 		pc('(');
 		paren = 1;
@@ -309,49 +356,58 @@ static void pexpi(int d, int p, js_Ast *exp)
 	case EXP_BITNOT: puna(d, p, exp, "~", ""); break;
 	case EXP_LOGNOT: puna(d, p, exp, "!", ""); break;
 
-	case EXP_LOGOR: pbin(d, p, exp, " || "); break;
-	case EXP_LOGAND: pbin(d, p, exp, " && "); break;
-	case EXP_BITOR: pbin(d, p, exp, " | "); break;
-	case EXP_BITXOR: pbin(d, p, exp, " ^ "); break;
-	case EXP_BITAND: pbin(d, p, exp, " & "); break;
-	case EXP_EQ: pbin(d, p, exp, " == "); break;
-	case EXP_NE: pbin(d, p, exp, " != "); break;
-	case EXP_STRICTEQ: pbin(d, p, exp, " === "); break;
-	case EXP_STRICTNE: pbin(d, p, exp, " !== "); break;
-	case EXP_LT: pbin(d, p, exp, " < "); break;
-	case EXP_GT: pbin(d, p, exp, " > "); break;
-	case EXP_LE: pbin(d, p, exp, " <= "); break;
-	case EXP_GE: pbin(d, p, exp, " >= "); break;
-	case EXP_INSTANCEOF: pbin(d, p, exp, " instanceof "); break;
-	case EXP_IN: pbin(d, p, exp, " in "); break;
-	case EXP_SHL: pbin(d, p, exp, " << "); break;
-	case EXP_SHR: pbin(d, p, exp, " >> "); break;
-	case EXP_USHR: pbin(d, p, exp, " >>> "); break;
-	case EXP_ADD: pbin(d, p, exp, " + "); break;
-	case EXP_SUB: pbin(d, p, exp, " - "); break;
-	case EXP_MUL: pbin(d, p, exp, " * "); break;
-	case EXP_DIV: pbin(d, p, exp, " / "); break;
-	case EXP_MOD: pbin(d, p, exp, " % "); break;
-	case EXP_ASS: pbin(d, p, exp, " = "); break;
-	case EXP_ASS_MUL: pbin(d, p, exp, " *= "); break;
-	case EXP_ASS_DIV: pbin(d, p, exp, " /= "); break;
-	case EXP_ASS_MOD: pbin(d, p, exp, " %= "); break;
-	case EXP_ASS_ADD: pbin(d, p, exp, " += "); break;
-	case EXP_ASS_SUB: pbin(d, p, exp, " -= "); break;
-	case EXP_ASS_SHL: pbin(d, p, exp, " <<= "); break;
-	case EXP_ASS_SHR: pbin(d, p, exp, " >>= "); break;
-	case EXP_ASS_USHR: pbin(d, p, exp, " >>>= "); break;
-	case EXP_ASS_BITAND: pbin(d, p, exp, " &= "); break;
-	case EXP_ASS_BITXOR: pbin(d, p, exp, " ^= "); break;
-	case EXP_ASS_BITOR: pbin(d, p, exp, " |= "); break;
+	case EXP_LOGOR: pbin(d, p, exp, "||"); break;
+	case EXP_LOGAND: pbin(d, p, exp, "&&"); break;
+	case EXP_BITOR: pbin(d, p, exp, "|"); break;
+	case EXP_BITXOR: pbin(d, p, exp, "^"); break;
+	case EXP_BITAND: pbin(d, p, exp, "&"); break;
+	case EXP_EQ: pbin(d, p, exp, "=="); break;
+	case EXP_NE: pbin(d, p, exp, "!="); break;
+	case EXP_STRICTEQ: pbin(d, p, exp, "==="); break;
+	case EXP_STRICTNE: pbin(d, p, exp, "!=="); break;
+	case EXP_LT: pbin(d, p, exp, "<"); break;
+	case EXP_GT: pbin(d, p, exp, ">"); break;
+	case EXP_LE: pbin(d, p, exp, "<="); break;
+	case EXP_GE: pbin(d, p, exp, ">="); break;
+	case EXP_IN: pbin(d, p, exp, "in"); break;
+	case EXP_SHL: pbin(d, p, exp, "<<"); break;
+	case EXP_SHR: pbin(d, p, exp, ">>"); break;
+	case EXP_USHR: pbin(d, p, exp, ">>>"); break;
+	case EXP_ADD: pbin(d, p, exp, "+"); break;
+	case EXP_SUB: pbin(d, p, exp, "-"); break;
+	case EXP_MUL: pbin(d, p, exp, "*"); break;
+	case EXP_DIV: pbin(d, p, exp, "/"); break;
+	case EXP_MOD: pbin(d, p, exp, "%"); break;
+	case EXP_ASS: pbin(d, p, exp, "="); break;
+	case EXP_ASS_MUL: pbin(d, p, exp, "*="); break;
+	case EXP_ASS_DIV: pbin(d, p, exp, "/="); break;
+	case EXP_ASS_MOD: pbin(d, p, exp, "%="); break;
+	case EXP_ASS_ADD: pbin(d, p, exp, "+="); break;
+	case EXP_ASS_SUB: pbin(d, p, exp, "-="); break;
+	case EXP_ASS_SHL: pbin(d, p, exp, "<<="); break;
+	case EXP_ASS_SHR: pbin(d, p, exp, ">>="); break;
+	case EXP_ASS_USHR: pbin(d, p, exp, ">>>="); break;
+	case EXP_ASS_BITAND: pbin(d, p, exp, "&="); break;
+	case EXP_ASS_BITXOR: pbin(d, p, exp, "^="); break;
+	case EXP_ASS_BITOR: pbin(d, p, exp, "|="); break;
 
-	case EXP_COMMA: pbin(d, p, exp, ", "); break;
+	case EXP_INSTANCEOF:
+		pexpi(d, p, exp->a);
+		ps(" instanceof ");
+		pexpi(d, p, exp->b);
+		break;
+
+	case EXP_COMMA:
+		pexpi(d, p, exp->a);
+		pc(','); sp();
+		pexpi(d, p, exp->b);
+		break;
 
 	case EXP_COND:
 		pexpi(d, p, exp->a);
-		ps(" ? ");
+		sp(); pc('?'); sp();
 		pexpi(d, p, exp->b);
-		ps(" : ");
+		sp(); pc(':'); sp();
 		pexpi(d, p, exp->c);
 		break;
 
@@ -386,10 +442,10 @@ static void pexpi(int d, int p, js_Ast *exp)
 	case EXP_FUN:
 		if (p == 0) pc('(');
 		ps("function ");
-		if (exp->a) pexpi(d, 0, exp->a);
+		pexpi(d, 0, exp->a);
 		pc('(');
 		pargs(d, exp->b);
-		ps(") {\n");
+		pc(')'); sp(); pc('{'); nl();
 		pstmlist(d, exp->c);
 		in(d); pc('}');
 		if (p == 0) pc(')');
@@ -413,7 +469,7 @@ static void pvar(int d, js_Ast *var)
 	assert(var->type == EXP_VAR);
 	pexp(d, var->a);
 	if (var->b) {
-		ps(" = ");
+		sp(); pc('='); sp();
 		pexp(d, var->b);
 	}
 }
@@ -425,23 +481,24 @@ static void pvarlist(int d, js_Ast *list)
 		pvar(d, list->a);
 		list = list->b;
 		if (list)
-			ps(", ");
+			comma();
 	}
 }
 
 static void pblock(int d, js_Ast *block)
 {
 	assert(block->type == STM_BLOCK);
-	ps(" {\n");
+	pc('{'); nl();
 	pstmlist(d, block->a);
 	in(d); pc('}');
 }
 
 static void pstmh(int d, js_Ast *stm)
 {
-	if (stm->type == STM_BLOCK)
+	if (stm->type == STM_BLOCK) {
+		sp();
 		pblock(d, stm);
-	else {
+	} else {
 		nl();
 		pstm(d+1, stm);
 	}
@@ -452,11 +509,11 @@ static void pcaselist(int d, js_Ast *list)
 	while (list) {
 		js_Ast *stm = list->a;
 		if (stm->type == STM_CASE) {
-			in(d); ps("case "); pexp(d, stm->a); ps(":\n");
+			in(d); ps("case "); pexp(d, stm->a); pc(':'); nl();
 			pstmlist(d, stm->b);
 		}
 		if (stm->type == STM_DEFAULT) {
-			in(d); ps("default:\n");
+			in(d); ps("default:"); nl();
 			pstmlist(d, stm->a);
 		}
 		list = list->b;
@@ -478,9 +535,9 @@ static void pstm(int d, js_Ast *stm)
 		pexp(d, stm->a);
 		pc('(');
 		pargs(d, stm->b);
-		ps(") {\n");
+		pc(')'); sp(); pc('{'); nl();
 		pstmlist(d, stm->c);
-		in(d); ps("}");
+		in(d); pc('}');
 		break;
 
 	case STM_EMPTY:
@@ -490,11 +547,11 @@ static void pstm(int d, js_Ast *stm)
 	case STM_VAR:
 		ps("var ");
 		pvarlist(d, stm->a);
-		ps(";");
+		pc(';');
 		break;
 
 	case STM_IF:
-		ps("if ("); pexp(d, stm->a); ps(")");
+		ps("if"); sp(); pc('('); pexp(d, stm->a); pc(')');
 		pstmh(d, stm->b);
 		if (stm->c) {
 			nl(); in(d); ps("else");
@@ -506,87 +563,89 @@ static void pstm(int d, js_Ast *stm)
 		ps("do");
 		pstmh(d, stm->a);
 		nl();
-		in(d); ps("while ("); pexp(d, stm->b); ps(");");
+		in(d); ps("while"); sp(); pc('('); pexp(d, stm->b); pc(')'); pc(';');
 		break;
 
 	case STM_WHILE:
-		ps("while ("); pexp(d, stm->a); ps(")");
+		ps("while"); sp(); pc('('); pexp(d, stm->a); pc(')');
 		pstmh(d, stm->b);
 		break;
 
 	case STM_FOR:
-		ps("for (");
-		pexp(d, stm->a); ps("; ");
-		pexp(d, stm->b); ps("; ");
-		pexp(d, stm->c); ps(")");
+		ps("for"); sp(); pc('(');
+		pexp(d, stm->a); pc(';'); sp();
+		pexp(d, stm->b); pc(';'); sp();
+		pexp(d, stm->c); pc(')');
 		pstmh(d, stm->d);
 		break;
 	case STM_FOR_VAR:
-		ps("for (var ");
-		pvarlist(d, stm->a); ps("; ");
-		pexp(d, stm->b); ps("; ");
-		pexp(d, stm->c); ps(")");
+		ps("for"); sp(); ps("(var ");
+		pvarlist(d, stm->a); pc(';'); sp();
+		pexp(d, stm->b); pc(';'); sp();
+		pexp(d, stm->c); pc(')');
 		pstmh(d, stm->d);
 		break;
 	case STM_FOR_IN:
-		ps("for (");
+		ps("for"); sp(); pc('(');
 		pexp(d, stm->a); ps(" in ");
-		pexp(d, stm->b); ps(")");
+		pexp(d, stm->b); pc(')');
 		pstmh(d, stm->c);
 		break;
 	case STM_FOR_IN_VAR:
-		ps("for (var ");
+		ps("for"); sp(); ps("(var ");
 		pvarlist(d, stm->a); ps(" in ");
-		pexp(d, stm->b); ps(")");
+		pexp(d, stm->b); pc(')');
 		pstmh(d, stm->c);
 		break;
 
 	case STM_CONTINUE:
+		ps("continue");
 		if (stm->a) {
-			ps("continue "); pexp(d, stm->a); ps(";");
-		} else {
-			ps("continue;");
+			pc(' '); pexp(d, stm->a);
 		}
+		pc(';');
 		break;
 
 	case STM_BREAK:
+		ps("break");
 		if (stm->a) {
-			ps("break "); pexp(d, stm->a); ps(";");
-		} else {
-			ps("break;");
+			pc(' '); pexp(d, stm->a);
 		}
+		pc(';');
 		break;
 
 	case STM_RETURN:
+		ps("return");
 		if (stm->a) {
-			ps("return "); pexp(d, stm->a); ps(";");
-		} else {
-			ps("return;");
+			pc(' '); pexp(d, stm->a);
 		}
+		pc(';');
 		break;
 
 	case STM_WITH:
-		ps("with ("); pexp(d, stm->a); ps(")");
+		ps("with"); sp(); pc('('); pexp(d, stm->a); pc(')');
 		pstmh(d, stm->b);
 		break;
 
 	case STM_SWITCH:
-		ps("switch (");
+		ps("switch"); sp(); pc('(');
 		pexp(d, stm->a);
-		ps(") {\n");
+		pc(')'); sp(); pc('{'); nl();
 		pcaselist(d, stm->b);
-		in(d); ps("}");
+		in(d); pc('}');
 		break;
 
 	case STM_THROW:
-		ps("throw "); pexp(d, stm->a); ps(";");
+		ps("throw "); pexp(d, stm->a); pc(';');
 		break;
 
 	case STM_TRY:
 		ps("try");
+		if (minify && stm->a->type != STM_BLOCK)
+			pc(' ');
 		pstmh(d, stm->a);
 		if (stm->b && stm->c) {
-			nl(); in(d); ps("catch ("); pexp(d, stm->b); ps(")");
+			nl(); in(d); ps("catch"); sp(); pc('('); pexp(d, stm->b); pc(')');
 			pstmh(d, stm->c);
 		}
 		if (stm->d) {
@@ -596,15 +655,17 @@ static void pstm(int d, js_Ast *stm)
 		break;
 
 	case STM_LABEL:
-		pexp(d, stm->a); ps(": "); pstm(d, stm->b);
+		pexp(d, stm->a); pc(':'); sp(); pstm(d, stm->b);
 		break;
 
 	case STM_DEBUGGER:
-		ps("debugger;");
+		ps("debugger");
+		pc(';');
 		break;
 
 	default:
-		pexp(d, stm); pc(';');
+		pexp(d, stm);
+		pc(';');
 	}
 }
 
@@ -618,14 +679,17 @@ static void pstmlist(int d, js_Ast *list)
 	}
 }
 
-void jsP_dumpsyntax(js_State *J, js_Ast *prog)
+void jsP_dumpsyntax(js_State *J, js_Ast *prog, int dominify)
 {
+	minify = dominify;
 	if (prog->type == AST_LIST)
 		pstmlist(-1, prog);
 	else {
 		pstm(0, prog);
 		nl();
 	}
+	if (minify > 1)
+		putchar('\n');
 }
 
 /* S-expression list representation */
@@ -648,7 +712,10 @@ static void snode(int d, js_Ast *node)
 
 	pc('(');
 	ps(astname[node->type]);
+	pc(':');
+	pn(node->line);
 	switch (node->type) {
+	default: break;
 	case AST_IDENTIFIER: pc(' '); ps(node->string); break;
 	case EXP_IDENTIFIER: pc(' '); ps(node->string); break;
 	case EXP_STRING: pc(' '); pstr(node->string); break;
@@ -700,6 +767,7 @@ static void sblock(int d, js_Ast *list)
 
 void jsP_dumplist(js_State *J, js_Ast *prog)
 {
+	minify = 0;
 	if (prog->type == AST_LIST)
 		sblock(0, prog);
 	else
@@ -713,7 +781,11 @@ void jsC_dumpfunction(js_State *J, js_Function *F)
 {
 	js_Instruction *p = F->code;
 	js_Instruction *end = F->code + F->codelen;
-	unsigned int i;
+	char *s;
+	double n;
+	int i;
+
+	minify = 0;
 
 	printf("%s(%d)\n", F->name, F->numparams);
 	if (F->lightweight) printf("\tlightweight\n");
@@ -726,46 +798,55 @@ void jsC_dumpfunction(js_State *J, js_Function *F)
 
 	printf("{\n");
 	while (p < end) {
+		int ln = *p++;
 		int c = *p++;
 
-		printf("% 5d: ", (int)(p - F->code) - 1);
+		printf("%5d(%3d): ", (int)(p - F->code) - 2, ln);
 		ps(opname[c]);
 
 		switch (c) {
+		case OP_INTEGER:
+			printf(" %ld", (long)((*p++) - 32768));
+			break;
 		case OP_NUMBER:
-			printf(" %.9g", F->numtab[*p++]);
+			memcpy(&n, p, sizeof(n));
+			p += sizeof(n) / sizeof(*p);
+			printf(" %.9g", n);
 			break;
 		case OP_STRING:
+			memcpy(&s, p, sizeof(s));
+			p += sizeof(s) / sizeof(*p);
 			pc(' ');
-			pstr(F->strtab[*p++]);
+			pstr(s);
 			break;
 		case OP_NEWREGEXP:
 			pc(' ');
-			pregexp(F->strtab[p[0]], p[1]);
-			p += 2;
+			memcpy(&s, p, sizeof(s));
+			p += sizeof(s) / sizeof(*p);
+			pregexp(s, *p++);
 			break;
 
-		case OP_INITVAR:
-		case OP_DEFVAR:
 		case OP_GETVAR:
+		case OP_HASVAR:
 		case OP_SETVAR:
 		case OP_DELVAR:
 		case OP_GETPROP_S:
 		case OP_SETPROP_S:
 		case OP_DELPROP_S:
 		case OP_CATCH:
+			memcpy(&s, p, sizeof(s));
+			p += sizeof(s) / sizeof(*p);
 			pc(' ');
-			ps(F->strtab[*p++]);
+			ps(s);
 			break;
 
-		case OP_LINE:
-		case OP_CLOSURE:
-		case OP_INITLOCAL:
 		case OP_GETLOCAL:
 		case OP_SETLOCAL:
 		case OP_DELLOCAL:
-		case OP_NUMBER_POS:
-		case OP_NUMBER_NEG:
+			printf(" %s", F->vartab[*p++ - 1]);
+			break;
+
+		case OP_CLOSURE:
 		case OP_CALL:
 		case OP_NEW:
 		case OP_JUMP:
@@ -773,7 +854,7 @@ void jsC_dumpfunction(js_State *J, js_Function *F)
 		case OP_JFALSE:
 		case OP_JCASE:
 		case OP_TRY:
-			printf(" %d", *p++);
+			printf(" %ld", (long)*p++);
 			break;
 		}
 
@@ -793,6 +874,7 @@ void jsC_dumpfunction(js_State *J, js_Function *F)
 
 void js_dumpvalue(js_State *J, js_Value v)
 {
+	minify = 0;
 	switch (v.type) {
 	case JS_TUNDEFINED: printf("undefined"); break;
 	case JS_TNULL: printf("null"); break;
@@ -807,26 +889,27 @@ void js_dumpvalue(js_State *J, js_Value v)
 			break;
 		}
 		switch (v.u.object->type) {
-		case JS_COBJECT: printf("[Object %p]", v.u.object); break;
-		case JS_CARRAY: printf("[Array %p]", v.u.object); break;
+		case JS_COBJECT: printf("[Object %p]", (void*)v.u.object); break;
+		case JS_CARRAY: printf("[Array %p]", (void*)v.u.object); break;
 		case JS_CFUNCTION:
 			printf("[Function %p, %s, %s:%d]",
-				v.u.object,
+				(void*)v.u.object,
 				v.u.object->u.f.function->name,
 				v.u.object->u.f.function->filename,
 				v.u.object->u.f.function->line);
 			break;
 		case JS_CSCRIPT: printf("[Script %s]", v.u.object->u.f.function->filename); break;
-		case JS_CCFUNCTION: printf("[CFunction %p]", v.u.object->u.c.function); break;
+		case JS_CCFUNCTION: printf("[CFunction %s]", v.u.object->u.c.name); break;
 		case JS_CBOOLEAN: printf("[Boolean %d]", v.u.object->u.boolean); break;
 		case JS_CNUMBER: printf("[Number %g]", v.u.object->u.number); break;
 		case JS_CSTRING: printf("[String'%s']", v.u.object->u.s.string); break;
-		case JS_CERROR: printf("[Error %s]", v.u.object->u.s.string); break;
-		case JS_CITERATOR: printf("[Iterator %p]", v.u.object); break;
+		case JS_CERROR: printf("[Error]"); break;
+		case JS_CARGUMENTS: printf("[Arguments %p]", (void*)v.u.object); break;
+		case JS_CITERATOR: printf("[Iterator %p]", (void*)v.u.object); break;
 		case JS_CUSERDATA:
 			printf("[Userdata %s %p]", v.u.object->u.user.tag, v.u.object->u.user.data);
 			break;
-		default: printf("[Object %p]", v.u.object); break;
+		default: printf("[Object %p]", (void*)v.u.object); break;
 		}
 		break;
 	}
@@ -834,6 +917,7 @@ void js_dumpvalue(js_State *J, js_Value v)
 
 static void js_dumpproperty(js_State *J, js_Property *node)
 {
+	minify = 0;
 	if (node->left->level)
 		js_dumpproperty(J, node->left);
 	printf("\t%s: ", node->name);
@@ -845,6 +929,7 @@ static void js_dumpproperty(js_State *J, js_Property *node)
 
 void js_dumpobject(js_State *J, js_Object *obj)
 {
+	minify = 0;
 	printf("{\n");
 	if (obj->properties->level)
 		js_dumpproperty(J, obj->properties);

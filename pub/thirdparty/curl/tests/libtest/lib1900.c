@@ -5,11 +5,11 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 2013, Linus Nielsen Feltzing, <linus@haxx.se>
+ * Copyright (C) 2013 - 2019, Linus Nielsen Feltzing, <linus@haxx.se>
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at http://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.haxx.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -29,20 +29,14 @@
 #define MAX_URLS 200
 #define MAX_BLACKLIST 20
 
-int urltime[MAX_URLS];
-char *urlstring[MAX_URLS];
-CURL *handles[MAX_URLS];
-char *site_blacklist[MAX_BLACKLIST];
-char *server_blacklist[MAX_BLACKLIST];
-int num_handles;
-int blacklist_num_servers;
-int blacklist_num_sites;
-
-int parse_url_file(const char *filename);
-void free_urls(void);
-int create_handles(void);
-void setup_handle(char *base_url, CURLM *m, int handlenum);
-void remove_handles(void);
+static int urltime[MAX_URLS];
+static char *urlstring[MAX_URLS];
+static CURL *handles[MAX_URLS];
+static char *site_blacklist[MAX_BLACKLIST];
+static char *server_blacklist[MAX_BLACKLIST];
+static int num_handles;
+static int blacklist_num_servers;
+static int blacklist_num_sites;
 
 static size_t
 write_callback(void *contents, size_t size, size_t nmemb, void *userp)
@@ -54,7 +48,7 @@ write_callback(void *contents, size_t size, size_t nmemb, void *userp)
   return realsize;
 }
 
-int parse_url_file(const char *filename)
+static int parse_url_file(const char *filename)
 {
   FILE *f;
   int filetime;
@@ -69,14 +63,14 @@ int parse_url_file(const char *filename)
     return 0;
 
   while(!feof(f)) {
-    if(fscanf(f, "%d %s\n", &filetime, buf)) {
+    if(fscanf(f, "%d %199s\n", &filetime, buf)) {
       urltime[num_handles] = filetime;
       urlstring[num_handles] = strdup(buf);
       num_handles++;
       continue;
     }
 
-    if(fscanf(f, "blacklist_site %s\n", buf)) {
+    if(fscanf(f, "blacklist_site %199s\n", buf)) {
       site_blacklist[blacklist_num_sites] = strdup(buf);
       blacklist_num_sites++;
       continue;
@@ -91,35 +85,35 @@ int parse_url_file(const char *filename)
   return num_handles;
 }
 
-void free_urls(void)
+static void free_urls(void)
 {
   int i;
-  for(i = 0;i < num_handles;i++) {
-    free(urlstring[i]);
+  for(i = 0; i < num_handles; i++) {
+    Curl_safefree(urlstring[i]);
   }
-  for(i = 0;i < blacklist_num_servers;i++) {
-    free(server_blacklist[i]);
+  for(i = 0; i < blacklist_num_servers; i++) {
+    Curl_safefree(server_blacklist[i]);
   }
-  for(i = 0;i < blacklist_num_sites;i++) {
-    free(site_blacklist[i]);
+  for(i = 0; i < blacklist_num_sites; i++) {
+    Curl_safefree(site_blacklist[i]);
   }
 }
 
-int create_handles(void)
+static int create_handles(void)
 {
   int i;
 
-  for(i = 0;i < num_handles;i++) {
+  for(i = 0; i < num_handles; i++) {
     handles[i] = curl_easy_init();
   }
   return 0;
 }
 
-void setup_handle(char *base_url, CURLM *m, int handlenum)
+static void setup_handle(char *base_url, CURLM *m, int handlenum)
 {
   char urlbuf[256];
 
-  sprintf(urlbuf, "%s%s", base_url, urlstring[handlenum]);
+  msnprintf(urlbuf, sizeof(urlbuf), "%s%s", base_url, urlstring[handlenum]);
   curl_easy_setopt(handles[handlenum], CURLOPT_URL, urlbuf);
   curl_easy_setopt(handles[handlenum], CURLOPT_VERBOSE, 1L);
   curl_easy_setopt(handles[handlenum], CURLOPT_FAILONERROR, 1L);
@@ -128,11 +122,11 @@ void setup_handle(char *base_url, CURLM *m, int handlenum)
   curl_multi_add_handle(m, handles[handlenum]);
 }
 
-void remove_handles(void)
+static void remove_handles(void)
 {
   int i;
 
-  for(i = 0;i < num_handles;i++) {
+  for(i = 0; i < num_handles; i++) {
     if(handles[i])
       curl_easy_cleanup(handles[i]);
   }
@@ -144,18 +138,18 @@ int test(char *URL)
   CURLM *m = NULL;
   CURLMsg *msg; /* for picking up messages with the transfer status */
   int msgs_left; /* how many messages are left */
-  int running;
+  int running = 0;
   int handlenum = 0;
   struct timeval last_handle_add;
 
-  if(parse_url_file("log/urls.txt") <= 0)
+  if(parse_url_file(libtest_arg2) <= 0)
     goto test_cleanup;
 
   start_test_timing();
 
   curl_global_init(CURL_GLOBAL_ALL);
 
-  m = curl_multi_init();
+  multi_init(m);
 
   create_handles();
 
@@ -173,7 +167,6 @@ int test(char *URL)
   for(;;) {
     struct timeval interval;
     struct timeval now;
-    long int msnow, mslast;
     fd_set rd, wr, exc;
     int maxfd = -99;
     long timeout;
@@ -183,9 +176,7 @@ int test(char *URL)
 
     if(handlenum < num_handles) {
       now = tutil_tvnow();
-      msnow = now.tv_sec * 1000 + now.tv_usec / 1000;
-      mslast = last_handle_add.tv_sec * 1000 + last_handle_add.tv_usec / 1000;
-      if(msnow - mslast >= urltime[handlenum] && handlenum < num_handles) {
+      if(tutil_tvdiff(now, last_handle_add) >= urltime[handlenum]) {
         fprintf(stdout, "Adding handle %d\n", handlenum);
         setup_handle(URL, m, handlenum);
         last_handle_add = now;
@@ -198,13 +189,14 @@ int test(char *URL)
     abort_on_test_timeout();
 
     /* See how the transfers went */
-    while ((msg = curl_multi_info_read(m, &msgs_left))) {
-      if (msg->msg == CURLMSG_DONE) {
-        int i, found = 0;
+    do {
+      msg = curl_multi_info_read(m, &msgs_left);
+      if(msg && msg->msg == CURLMSG_DONE) {
+        int i;
 
         /* Find out which handle this message is about */
-        for (i = 0; i < num_handles; i++) {
-          found = (msg->easy_handle == handles[i]);
+        for(i = 0; i < num_handles; i++) {
+          int found = (msg->easy_handle == handles[i]);
           if(found)
             break;
         }
@@ -212,7 +204,7 @@ int test(char *URL)
         printf("Handle %d Completed with status %d\n", i, msg->data.result);
         curl_multi_remove_handle(m, handles[i]);
       }
-    }
+    } while(msg);
 
     if(handlenum == num_handles && !running) {
       break; /* done */
@@ -237,7 +229,7 @@ int test(char *URL)
     interval.tv_sec = 0;
     interval.tv_usec = 1000;
 
-    select_test(maxfd+1, &rd, &wr, &exc, &interval);
+    select_test(maxfd + 1, &rd, &wr, &exc, &interval);
 
     abort_on_test_timeout();
   }

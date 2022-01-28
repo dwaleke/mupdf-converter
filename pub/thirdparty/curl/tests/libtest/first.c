@@ -5,11 +5,11 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2011, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2019, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at http://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.haxx.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -22,7 +22,19 @@
 #include "test.h"
 
 #ifdef HAVE_LOCALE_H
-#include <locale.h> /* for setlocale() */
+#  include <locale.h> /* for setlocale() */
+#endif
+
+#ifdef HAVE_IO_H
+#  include <io.h> /* for setmode() */
+#endif
+
+#ifdef HAVE_FCNTL_H
+#  include <fcntl.h> /* for setmode() */
+#endif
+
+#ifdef USE_NSS
+#include <nspr.h>
 #endif
 
 #ifdef CURLDEBUG
@@ -44,15 +56,24 @@ int select_wrapper(int nfds, fd_set *rd, fd_set *wr, fd_set *exc,
    * select() can not be used to sleep without a single fd_set.
    */
   if(!nfds) {
-    Sleep(1000*tv->tv_sec + tv->tv_usec/1000);
+    Sleep((1000*tv->tv_sec) + (DWORD)(((double)tv->tv_usec)/1000.0));
     return 0;
   }
 #endif
   return select(nfds, rd, wr, exc, tv);
 }
 
-char *libtest_arg2=NULL;
-char *libtest_arg3=NULL;
+void wait_ms(int ms)
+{
+  struct timeval t;
+  t.tv_sec = ms/1000;
+  ms -= (int)t.tv_sec * 1000;
+  t.tv_usec = ms * 1000;
+  select_wrapper(0, NULL, NULL, NULL, &t);
+}
+
+char *libtest_arg2 = NULL;
+char *libtest_arg3 = NULL;
 int test_argc;
 char **test_argv;
 
@@ -75,10 +96,10 @@ static void memory_tracking_init(void)
       env[CURL_MT_LOGFNAME_BUFSIZE-1] = '\0';
     strcpy(fname, env);
     curl_free(env);
-    curl_memdebug(fname);
-    /* this weird stuff here is to make curl_free() get called
-       before curl_memdebug() as otherwise memory tracking will
-       log a free() without an alloc! */
+    curl_dbg_memdebug(fname);
+    /* this weird stuff here is to make curl_free() get called before
+       curl_dbg_memdebug() as otherwise memory tracking will log a free()
+       without an alloc! */
   }
   /* if CURL_MEMLIMIT is set, this enables fail-on-alloc-number-N feature */
   env = curl_getenv("CURL_MEMLIMIT");
@@ -86,7 +107,7 @@ static void memory_tracking_init(void)
     char *endptr;
     long num = strtol(env, &endptr, 10);
     if((endptr != env) && (endptr == env + strlen(env)) && (num > 0))
-      curl_memlimit(num);
+      curl_dbg_memlimit(num);
     curl_free(env);
   }
 }
@@ -94,9 +115,32 @@ static void memory_tracking_init(void)
 #  define memory_tracking_init() Curl_nop_stmt
 #endif
 
+/* returns a hexdump in a static memory area */
+char *hexdump(const unsigned char *buffer, size_t len)
+{
+  static char dump[200 * 3 + 1];
+  char *p = dump;
+  size_t i;
+  if(len > 200)
+    return NULL;
+  for(i = 0; i<len; i++, p += 3)
+    msnprintf(p, 4, "%02x ", buffer[i]);
+  return dump;
+}
+
+
 int main(int argc, char **argv)
 {
   char *URL;
+  int result;
+
+#ifdef O_BINARY
+#  ifdef __HIGHC__
+  _setmode(stdout, O_BINARY);
+#  else
+  setmode(fileno(stdout), O_BINARY);
+#  endif
+#endif
 
   memory_tracking_init();
 
@@ -109,7 +153,7 @@ int main(int argc, char **argv)
   setlocale(LC_ALL, "");
 #endif
 
-  if(argc< 2 ) {
+  if(argc< 2) {
     fprintf(stderr, "Pass URL as argument please\n");
     return 1;
   }
@@ -118,14 +162,22 @@ int main(int argc, char **argv)
   test_argv = argv;
 
   if(argc>2)
-    libtest_arg2=argv[2];
+    libtest_arg2 = argv[2];
 
   if(argc>3)
-    libtest_arg3=argv[3];
+    libtest_arg3 = argv[3];
 
   URL = argv[1]; /* provide this to the rest */
 
   fprintf(stderr, "URL: %s\n", URL);
 
-  return test(URL);
+  result = test(URL);
+
+#ifdef USE_NSS
+  if(PR_Initialized())
+    /* prevent valgrind from reporting possibly lost memory (fd cache, ...) */
+    PR_Cleanup();
+#endif
+
+  return result;
 }

@@ -1,3 +1,25 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 /*
  * Blit RGBA images to X with X(Shm)Images
  */
@@ -13,6 +35,10 @@
 #define noSHOWINFO
 
 #include "mupdf/fitz.h"
+
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -118,7 +144,7 @@ createximage(Display *dpy, Visual *vis, XShmSegmentInfo *xsi, int depth, int w, 
 	}
 
 	xsi->shmid = shmget(IPC_PRIVATE,
-		img->bytes_per_line * img->height,
+		(size_t)img->bytes_per_line * img->height,
 		IPC_CREAT | 0777);
 	if (xsi->shmid < 0)
 	{
@@ -161,7 +187,7 @@ fallback:
 		abort();
 	}
 
-	img->data = malloc(h * img->bytes_per_line);
+	img->data = malloc((size_t)h * img->bytes_per_line);
 	if (!img->data)
 	{
 		fprintf(stderr, "fail: could not malloc");
@@ -211,7 +237,6 @@ make_colormap(void)
 static void
 select_mode(void)
 {
-
 	int byteorder;
 	int byterev;
 	unsigned long rm, gm, bm;

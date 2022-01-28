@@ -844,7 +844,6 @@ daniel
 HTTP/1.1 200 OK swsbounce
 Server: no
 
-Nice proxy auth sir!
 </connect1000>
 
 <datacheck>
@@ -873,6 +872,7 @@ daniel
 http
 </server>
 <features>
+!SSPI
 crypto
 </features>
  <name>

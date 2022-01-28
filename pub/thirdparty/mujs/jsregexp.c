@@ -3,7 +3,26 @@
 #include "jsbuiltin.h"
 #include "regexp.h"
 
-void js_newregexp(js_State *J, const char *pattern, int flags)
+static char *escaperegexp(js_State *J, const char *pattern) {
+	char *copy, *p;
+	const char *s;
+	int n = 0;
+	for (s = pattern; *s; ++s) {
+		if (*s == '/')
+			++n;
+		++n;
+	}
+	copy = p = js_malloc(J, n+1);
+	for (s = pattern; *s; ++s) {
+		if (*s == '/')
+			*p++ = '\\';
+		*p++ = *s;
+	}
+	*p = 0;
+	return copy;
+}
+
+static void js_newregexpx(js_State *J, const char *pattern, int flags, int is_clone)
 {
 	const char *error;
 	js_Object *obj;
@@ -16,20 +35,26 @@ void js_newregexp(js_State *J, const char *pattern, int flags)
 	if (flags & JS_REGEXP_I) opts |= REG_ICASE;
 	if (flags & JS_REGEXP_M) opts |= REG_NEWLINE;
 
-	prog = js_regcomp(pattern, opts, &error);
+	prog = js_regcompx(J->alloc, J->actx, pattern, opts, &error);
 	if (!prog)
 		js_syntaxerror(J, "regular expression: %s", error);
 
 	obj->u.r.prog = prog;
-	obj->u.r.source = pattern;
+	obj->u.r.source = is_clone ? js_strdup(J, pattern) : escaperegexp(J, pattern);
 	obj->u.r.flags = flags;
 	obj->u.r.last = 0;
 	js_pushobject(J, obj);
 }
 
+void js_newregexp(js_State *J, const char *pattern, int flags)
+{
+	js_newregexpx(J, pattern, flags, 0);
+}
+
 void js_RegExp_prototype_exec(js_State *J, js_Regexp *re, const char *text)
 {
-	unsigned int i;
+	int result;
+	int i;
 	int opts;
 	Resub m;
 
@@ -46,7 +71,10 @@ void js_RegExp_prototype_exec(js_State *J, js_Regexp *re, const char *text)
 		}
 	}
 
-	if (!js_regexec(re->prog, text, &m, opts)) {
+	result = js_regexec(re->prog, text, &m, opts);
+	if (result < 0)
+		js_error(J, "regexec failed");
+	if (result == 0) {
 		js_newarray(J);
 		js_pushstring(J, text);
 		js_setproperty(J, -2, "input");
@@ -71,6 +99,7 @@ static void Rp_test(js_State *J)
 {
 	js_Regexp *re;
 	const char *text;
+	int result;
 	int opts;
 	Resub m;
 
@@ -90,7 +119,10 @@ static void Rp_test(js_State *J)
 		}
 	}
 
-	if (!js_regexec(re->prog, text, &m, opts)) {
+	result = js_regexec(re->prog, text, &m, opts);
+	if (result < 0)
+		js_error(J, "regexec failed");
+	if (result == 0) {
 		if (re->flags & JS_REGEXP_G)
 			re->last = re->last + (m.sub[0].ep - text);
 		js_pushboolean(J, 1);
@@ -108,6 +140,7 @@ static void jsB_new_RegExp(js_State *J)
 	js_Regexp *old;
 	const char *pattern;
 	int flags;
+	int is_clone = 0;
 
 	if (js_isregexp(J, 1)) {
 		if (js_isdefined(J, 2))
@@ -115,13 +148,17 @@ static void jsB_new_RegExp(js_State *J)
 		old = js_toregexp(J, 1);
 		pattern = old->source;
 		flags = old->flags;
+		is_clone = 1;
 	} else if (js_isundefined(J, 1)) {
-		pattern = "";
+		pattern = "(?:)";
 		flags = 0;
 	} else {
 		pattern = js_tostring(J, 1);
 		flags = 0;
 	}
+
+	if (strlen(pattern) == 0)
+		pattern = "(?:)";
 
 	if (js_isdefined(J, 2)) {
 		const char *s = js_tostring(J, 2);
@@ -141,12 +178,12 @@ static void jsB_new_RegExp(js_State *J)
 		if (m) flags |= JS_REGEXP_M;
 	}
 
-	js_newregexp(J, pattern, flags);
+	js_newregexpx(J, pattern, flags, is_clone);
 }
 
 static void jsB_RegExp(js_State *J)
 {
-	if (js_gettop(J) == 2 && js_isregexp(J, 1))
+	if (js_isregexp(J, 1))
 		return;
 	jsB_new_RegExp(J);
 }
@@ -185,9 +222,9 @@ void jsB_initregexp(js_State *J)
 {
 	js_pushobject(J, J->RegExp_prototype);
 	{
-		jsB_propf(J, "toString", Rp_toString, 0);
-		jsB_propf(J, "test", Rp_test, 0);
-		jsB_propf(J, "exec", Rp_exec, 0);
+		jsB_propf(J, "RegExp.prototype.toString", Rp_toString, 0);
+		jsB_propf(J, "RegExp.prototype.test", Rp_test, 0);
+		jsB_propf(J, "RegExp.prototype.exec", Rp_exec, 0);
 	}
 	js_newcconstructor(J, jsB_RegExp, jsB_new_RegExp, "RegExp", 1);
 	js_defglobal(J, "RegExp", JS_DONTENUM);

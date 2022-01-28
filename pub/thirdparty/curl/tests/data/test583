@@ -29,12 +29,15 @@ SFTP with multi interface, remove handle early
 # name resolve will cause it to return rather quickly and thus we could trigger
 # the problem we're looking to verify.
  <command>
-sftp://localhost:%SSHPORT%PWD/log/upload583.txt %USER:
+sftp://localhost:%SSHPORT%POSIX_PWD/log/upload583.txt %USER:
 </command>
 </client>
 
 # Verify data after the test has been "shot"
 <verify>
+<valgrind>
+disable
+</valgrind>
 <errorcode>
 0
 </errorcode>

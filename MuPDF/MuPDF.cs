@@ -352,9 +352,9 @@ namespace MuPDFLib
 
         public unsafe Bitmap GetBitmap(int width, int height, float dpix, float dpiy, int rotation, RenderType type, bool rotateLandscapePages, bool convertToLetter, int maxSize)
         {
-            Bitmap bitmap2 = null;
+            Bitmap bitmap2;
             int nLength = 0;
-            IntPtr data = _Api.GetBitmapData(this.m_pNativeObject, out width, out height, dpix, dpiy, rotation, (int)type, rotateLandscapePages, convertToLetter, out nLength, maxSize);
+            IntPtr? data = _Api.GetBitmapData(this.m_pNativeObject, out width, out height, dpix, dpiy, rotation, (int)type, rotateLandscapePages, convertToLetter, out nLength, maxSize);
             if (data == null || data == IntPtr.Zero)
                 throw new Exception("Unable to render pdf page to bitmap!");
 
@@ -437,9 +437,9 @@ namespace MuPDFLib
 
         public unsafe BitmapSource GetBitmapSource(int width, int height, float dpix, float dpiy, int rotation, RenderType type, bool rotateLandscapePages, bool convertToLetter, int maxSize)
         {
-            WriteableBitmap write = null;
+            WriteableBitmap write;
             int nLength = 0;
-            IntPtr data = _Api.GetBitmapData(this.m_pNativeObject, out width, out height, dpix, dpiy, rotation, (int)type, rotateLandscapePages, convertToLetter, out nLength, maxSize);
+            IntPtr? data = _Api.GetBitmapData(this.m_pNativeObject, out width, out height, dpix, dpiy, rotation, (int)type, rotateLandscapePages, convertToLetter, out nLength, maxSize);
             if (data == null || data == IntPtr.Zero)
                 throw new Exception("Unable to render pdf page to bitmap!");
 
@@ -525,9 +525,9 @@ namespace MuPDFLib
 
         public unsafe WriteableBitmap GetWriteableBitmap(int width, int height, float dpix, float dpiy, int rotation, RenderType type, bool rotateLandscapePages, bool convertToLetter, int maxSize)
         {
-            WriteableBitmap write = null;
+            WriteableBitmap? write = null;
             int nLength = 0;
-            IntPtr data = _Api.GetBitmapData(this.m_pNativeObject, out width, out height, dpix, dpiy, rotation, (int)type, rotateLandscapePages, convertToLetter, out nLength, maxSize);
+            IntPtr? data = _Api.GetBitmapData(this.m_pNativeObject, out width, out height, dpix, dpiy, rotation, (int)type, rotateLandscapePages, convertToLetter, out nLength, maxSize);
             if (data == null || data == IntPtr.Zero)
                 throw new Exception("Unable to render pdf page to bitmap!");
 
@@ -613,10 +613,10 @@ namespace MuPDFLib
 
         public unsafe byte[] GetPixels(ref int width, ref int height, float dpix, float dpiy, int rotation, RenderType type, bool rotateLandscapePages, bool convertToLetter, out uint cbStride, int maxSize)
         {
-            byte[] output = null;
+            byte[] output;
             int nLength = 0;
             IntPtr data = _Api.GetBitmapData(this.m_pNativeObject, out width, out height, dpix, dpiy, rotation, (int)type, rotateLandscapePages, convertToLetter, out nLength, maxSize);
-            if (data == null || data == IntPtr.Zero)
+            if (data == IntPtr.Zero)
                 throw new Exception("Unable to render pdf page to bitmap!");
 
             if (type == RenderType.RGB)

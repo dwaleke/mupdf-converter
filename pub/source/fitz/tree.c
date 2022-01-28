@@ -1,8 +1,32 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #include "mupdf/fitz.h"
+
+#include <string.h>
 
 /* AA-tree */
 
-struct fz_tree_s
+struct fz_tree
 {
 	char *key;
 	void *value;
@@ -10,15 +34,23 @@ struct fz_tree_s
 	int level;
 };
 
-static fz_tree sentinel = { "", NULL, &sentinel, &sentinel, 0 };
+static fz_tree tree_sentinel = { "", NULL, &tree_sentinel, &tree_sentinel, 0 };
 
 static fz_tree *fz_tree_new_node(fz_context *ctx, const char *key, void *value)
 {
 	fz_tree *node = fz_malloc_struct(ctx, fz_tree);
-	node->key = fz_strdup(ctx, key);
-	node->value = value;
-	node->left = node->right = &sentinel;
-	node->level = 1;
+	fz_try(ctx)
+	{
+		node->key = fz_strdup(ctx, key);
+		node->value = value;
+		node->left = node->right = &tree_sentinel;
+		node->level = 1;
+	}
+	fz_catch(ctx)
+	{
+		fz_free(ctx, node);
+		fz_rethrow(ctx);
+	}
 	return node;
 }
 
@@ -26,7 +58,7 @@ void *fz_tree_lookup(fz_context *ctx, fz_tree *node, const char *key)
 {
 	if (node)
 	{
-		while (node != &sentinel)
+		while (node != &tree_sentinel)
 		{
 			int c = strcmp(key, node->key);
 			if (c == 0)
@@ -72,7 +104,7 @@ static fz_tree *fz_tree_split(fz_tree *node)
 
 fz_tree *fz_tree_insert(fz_context *ctx, fz_tree *node, const char *key, void *value)
 {
-	if (node && node != &sentinel)
+	if (node && node != &tree_sentinel)
 	{
 		int c = strcmp(key, node->key);
 		if (c < 0)
@@ -93,32 +125,13 @@ void fz_drop_tree(fz_context *ctx, fz_tree *node, void (*dropfunc)(fz_context *c
 {
 	if (node)
 	{
-		if (node->left != &sentinel)
+		if (node->left != &tree_sentinel)
 			fz_drop_tree(ctx, node->left, dropfunc);
-		if (node->right != &sentinel)
+		if (node->right != &tree_sentinel)
 			fz_drop_tree(ctx, node->right, dropfunc);
 		fz_free(ctx, node->key);
 		if (dropfunc)
 			dropfunc(ctx, node->value);
+		fz_free(ctx, node);
 	}
-}
-
-static void print_tree_imp(fz_context *ctx, fz_tree *node, int level)
-{
-	int i;
-	if (node->left != &sentinel)
-		print_tree_imp(ctx, node->left, level + 1);
-	for (i = 0; i < level; i++)
-		putchar(' ');
-	printf("%s = %p (%d)\n", node->key, node->value, node->level);
-	if (node->right != &sentinel)
-		print_tree_imp(ctx, node->right, level + 1);
-}
-
-void fz_debug_tree(fz_context *ctx, fz_tree *root)
-{
-	printf("--- tree dump ---\n");
-	if (root && root != &sentinel)
-		print_tree_imp(ctx, root, 0);
-	printf("---\n");
 }

@@ -1,8 +1,0 @@
-C:\Users\dwalme\Source\Repos\mupdf-converter\MuPDF\bin\Debug\MuPDFLib-x64.dll
-C:\Users\dwalme\Source\Repos\mupdf-converter\MuPDF\bin\Debug\MuPDFLib-x86.dll
-C:\Users\dwalme\Source\Repos\mupdf-converter\MuPDF\bin\Debug\MuPDF.dll
-C:\Users\dwalme\Source\Repos\mupdf-converter\MuPDF\bin\Debug\MuPDF.pdb
-C:\Users\dwalme\Source\Repos\mupdf-converter\MuPDF\obj\Debug\MuPDF.csproj.AssemblyReference.cache
-C:\Users\dwalme\Source\Repos\mupdf-converter\MuPDF\obj\Debug\MuPDF.csproj.CoreCompileInputs.cache
-C:\Users\dwalme\Source\Repos\mupdf-converter\MuPDF\obj\Debug\MuPDF.dll
-C:\Users\dwalme\Source\Repos\mupdf-converter\MuPDF\obj\Debug\MuPDF.pdb

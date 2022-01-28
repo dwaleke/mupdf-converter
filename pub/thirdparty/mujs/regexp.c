@@ -11,11 +11,21 @@
 #define next regnext
 #define accept regaccept
 
-#define nelem(a) (sizeof (a) / sizeof (a)[0])
+#define nelem(a) (int)(sizeof (a) / sizeof (a)[0])
 
 #define REPINF 255
-#define MAXTHREAD 1000
-#define MAXSUB REG_MAXSUB
+#ifndef REG_MAXPROG
+#define REG_MAXPROG (32 << 10)
+#endif
+#ifndef REG_MAXREC
+#define REG_MAXREC 1024
+#endif
+#ifndef REG_MAXSPAN
+#define REG_MAXSPAN 64
+#endif
+#ifndef REG_MAXCLASS
+#define REG_MAXCLASS 16
+#endif
 
 typedef struct Reclass Reclass;
 typedef struct Renode Renode;
@@ -24,14 +34,14 @@ typedef struct Rethread Rethread;
 
 struct Reclass {
 	Rune *end;
-	Rune spans[64];
+	Rune spans[REG_MAXSPAN];
 };
 
 struct Reprog {
 	Reinst *start, *end;
 	int flags;
-	unsigned int nsub;
-	Reclass cclass[16];
+	int nsub;
+	Reclass cclass[REG_MAXCLASS];
 };
 
 struct cstate {
@@ -39,9 +49,9 @@ struct cstate {
 	Renode *pstart, *pend;
 
 	const char *source;
-	unsigned int ncclass;
-	unsigned int nsub;
-	Renode *sub[MAXSUB];
+	int ncclass;
+	int nsub;
+	Renode *sub[REG_MAXSUB];
 
 	int lookahead;
 	Rune yychar;
@@ -97,7 +107,7 @@ static int dec(struct cstate *g, int c)
 	return 0;
 }
 
-#define ESCAPES "BbDdSsWw^$\\.*+?()[]{}|0123456789"
+#define ESCAPES "BbDdSsWw^$\\.*+?()[]{}|-0123456789"
 
 static int isunicodeletter(int c)
 {
@@ -106,20 +116,29 @@ static int isunicodeletter(int c)
 
 static int nextrune(struct cstate *g)
 {
+	if (!*g->source) {
+		g->yychar = EOF;
+		return 0;
+	}
 	g->source += chartorune(&g->yychar, g->source);
 	if (g->yychar == '\\') {
+		if (!*g->source)
+			die(g, "unterminated escape sequence");
 		g->source += chartorune(&g->yychar, g->source);
 		switch (g->yychar) {
-		case 0: die(g, "unterminated escape sequence");
 		case 'f': g->yychar = '\f'; return 0;
 		case 'n': g->yychar = '\n'; return 0;
 		case 'r': g->yychar = '\r'; return 0;
 		case 't': g->yychar = '\t'; return 0;
 		case 'v': g->yychar = '\v'; return 0;
 		case 'c':
+			if (!g->source[0])
+				die(g, "unterminated escape sequence");
 			g->yychar = (*g->source++) & 31;
 			return 0;
 		case 'x':
+			if (!g->source[0] || !g->source[1])
+				die(g, "unterminated escape sequence");
 			g->yychar = hex(g, *g->source++) << 4;
 			g->yychar += hex(g, *g->source++);
 			if (g->yychar == 0) {
@@ -128,6 +147,8 @@ static int nextrune(struct cstate *g)
 			}
 			return 0;
 		case 'u':
+			if (!g->source[0] || !g->source[1] || !g->source[2] || !g->source[3])
+				die(g, "unterminated escape sequence");
 			g->yychar = hex(g, *g->source++) << 12;
 			g->yychar += hex(g, *g->source++) << 8;
 			g->yychar += hex(g, *g->source++) << 4;
@@ -137,6 +158,9 @@ static int nextrune(struct cstate *g)
 				return 1;
 			}
 			return 0;
+		case 0:
+			g->yychar = '0';
+			return 1;
 		}
 		if (strchr(ESCAPES, g->yychar))
 			return 1;
@@ -156,9 +180,9 @@ static int lexcount(struct cstate *g)
 	while (g->yychar != ',' && g->yychar != '}') {
 		g->yymin = g->yymin * 10 + dec(g, g->yychar);
 		g->yychar = *g->source++;
+		if (g->yymin >= REPINF)
+			die(g, "numeric overflow");
 	}
-	if (g->yymin >= REPINF)
-		die(g, "numeric overflow");
 
 	if (g->yychar == ',') {
 		g->yychar = *g->source++;
@@ -170,9 +194,9 @@ static int lexcount(struct cstate *g)
 			while (g->yychar != '}') {
 				g->yymax = g->yymax * 10 + dec(g, g->yychar);
 				g->yychar = *g->source++;
+				if (g->yymax >= REPINF)
+					die(g, "numeric overflow");
 			}
-			if (g->yymax >= REPINF)
-				die(g, "numeric overflow");
 		}
 	} else {
 		g->yymax = g->yymin;
@@ -193,7 +217,7 @@ static void addrange(struct cstate *g, Rune a, Rune b)
 {
 	if (a > b)
 		die(g, "invalid character class range");
-	if (g->yycc->end + 2 == g->yycc->spans + nelem(g->yycc->spans))
+	if (g->yycc->end + 2 >= g->yycc->spans + nelem(g->yycc->spans))
 		die(g, "too many character class ranges");
 	*g->yycc->end++ = a;
 	*g->yycc->end++ = b;
@@ -212,8 +236,7 @@ static void addranges_D(struct cstate *g)
 
 static void addranges_s(struct cstate *g)
 {
-	addrange(g, 0x9, 0x9);
-	addrange(g, 0xA, 0xD);
+	addrange(g, 0x9, 0xD);
 	addrange(g, 0x20, 0x20);
 	addrange(g, 0xA0, 0xA0);
 	addrange(g, 0x2028, 0x2029);
@@ -223,7 +246,6 @@ static void addranges_s(struct cstate *g)
 static void addranges_S(struct cstate *g)
 {
 	addrange(g, 0, 0x9-1);
-	addrange(g, 0x9+1, 0xA-1);
 	addrange(g, 0xD+1, 0x20-1);
 	addrange(g, 0x20+1, 0xA0-1);
 	addrange(g, 0xA0+1, 0x2028-1);
@@ -252,7 +274,7 @@ static int lexclass(struct cstate *g)
 {
 	int type = L_CCLASS;
 	int quoted, havesave, havedash;
-	Rune save;
+	Rune save = 0;
 
 	newcclass(g);
 
@@ -264,7 +286,7 @@ static int lexclass(struct cstate *g)
 
 	havesave = havedash = 0;
 	for (;;) {
-		if (g->yychar == 0)
+		if (g->yychar == EOF)
 			die(g, "unterminated character class");
 		if (!quoted && g->yychar == ']')
 			break;
@@ -355,7 +377,7 @@ static int lex(struct cstate *g)
 	}
 
 	switch (g->yychar) {
-	case 0:
+	case EOF:
 	case '$': case ')': case '*': case '+':
 	case '.': case '?': case '^': case '|':
 		return g->yychar;
@@ -483,7 +505,7 @@ static Renode *parseatom(struct cstate *g)
 	}
 	if (g->lookahead == L_REF) {
 		atom = newnode(g, P_REF);
-		if (g->yychar == 0 || g->yychar > g->nsub || !g->sub[g->yychar])
+		if (g->yychar == 0 || g->yychar >= g->nsub || !g->sub[g->yychar])
 			die(g, "invalid back-reference");
 		atom->n = g->yychar;
 		atom->x = g->sub[g->yychar];
@@ -494,7 +516,7 @@ static Renode *parseatom(struct cstate *g)
 		return newnode(g, P_ANY);
 	if (accept(g, '(')) {
 		atom = newnode(g, P_PAR);
-		if (g->nsub == MAXSUB)
+		if (g->nsub == REG_MAXSUB)
 			die(g, "too many captures");
 		atom->n = g->nsub++;
 		atom->x = parsealt(g);
@@ -552,16 +574,19 @@ static Renode *parserep(struct cstate *g)
 
 static Renode *parsecat(struct cstate *g)
 {
-	Renode *cat, *x;
-	if (g->lookahead && g->lookahead != '|' && g->lookahead != ')') {
-		cat = parserep(g);
-		while (g->lookahead && g->lookahead != '|' && g->lookahead != ')') {
-			x = cat;
+	Renode *cat, *head, **tail;
+	if (g->lookahead != EOF && g->lookahead != '|' && g->lookahead != ')') {
+		/* Build a right-leaning tree by splicing in new 'cat' at the tail. */
+		head = parserep(g);
+		tail = &head;
+		while (g->lookahead != EOF && g->lookahead != '|' && g->lookahead != ')') {
 			cat = newnode(g, P_CAT);
-			cat->x = x;
+			cat->x = *tail;
 			cat->y = parserep(g);
+			*tail = cat;
+			tail = &cat->y;
 		}
-		return cat;
+		return head;
 	}
 	return NULL;
 }
@@ -597,23 +622,25 @@ struct Reinst {
 	Reinst *y;
 };
 
-static unsigned int count(Renode *node)
+static int count(struct cstate *g, Renode *node)
 {
-	unsigned int min, max;
+	int min, max, n;
 	if (!node) return 0;
 	switch (node->type) {
 	default: return 1;
-	case P_CAT: return count(node->x) + count(node->y);
-	case P_ALT: return count(node->x) + count(node->y) + 2;
+	case P_CAT: return count(g, node->x) + count(g, node->y);
+	case P_ALT: return count(g, node->x) + count(g, node->y) + 2;
 	case P_REP:
 		min = node->m;
 		max = node->n;
-		if (min == max) return count(node->x) * min;
-		if (max < REPINF) return count(node->x) * max + (max - min);
-		return count(node->x) * (min + 1) + 2;
-	case P_PAR: return count(node->x) + 2;
-	case P_PLA: return count(node->x) + 2;
-	case P_NLA: return count(node->x) + 2;
+		if (min == max) n = count(g, node->x) * min;
+		else if (max < REPINF) n = count(g, node->x) * max + (max - min);
+		else n = count(g, node->x) * (min + 1) + 2;
+		if (n < 0 || n > REG_MAXPROG) die(g, "program too large");
+		return n;
+	case P_PAR: return count(g, node->x) + 2;
+	case P_PLA: return count(g, node->x) + 2;
+	case P_NLA: return count(g, node->x) + 2;
 	}
 }
 
@@ -631,16 +658,17 @@ static Reinst *emit(Reprog *prog, int opcode)
 static void compile(Reprog *prog, Renode *node)
 {
 	Reinst *inst, *split, *jump;
-	unsigned int i;
+	int i;
 
+loop:
 	if (!node)
 		return;
 
 	switch (node->type) {
 	case P_CAT:
 		compile(prog, node->x);
-		compile(prog, node->y);
-		break;
+		node = node->y;
+		goto loop;
 
 	case P_ALT:
 		split = emit(prog, I_SPLIT);
@@ -653,6 +681,7 @@ static void compile(Reprog *prog, Renode *node)
 		break;
 
 	case P_REP:
+		inst = NULL; /* silence compiler warning. assert(node->m > 0). */
 		for (i = 0; i < node->m; ++i) {
 			inst = prog->end;
 			compile(prog, node->x);
@@ -780,6 +809,21 @@ static void dumpnode(Renode *node)
 	}
 }
 
+static void dumpcclass(Reclass *cc) {
+	Rune *p;
+	for (p = cc->spans; p < cc->end; p += 2) {
+		if (p[0] > 32 && p[0] < 127)
+			printf(" %c", p[0]);
+		else
+			printf(" \\x%02x", p[0]);
+		if (p[1] > 32 && p[1] < 127)
+			printf("-%c", p[1]);
+		else
+			printf("-\\x%02x", p[1]);
+	}
+	putchar('\n');
+}
+
 static void dumpprog(Reprog *prog)
 {
 	Reinst *inst;
@@ -795,8 +839,8 @@ static void dumpprog(Reprog *prog)
 		case I_ANY: puts("any"); break;
 		case I_ANYNL: puts("anynl"); break;
 		case I_CHAR: printf(inst->c >= 32 && inst->c < 127 ? "char '%c'\n" : "char U+%04X\n", inst->c); break;
-		case I_CCLASS: puts("cclass"); break;
-		case I_NCCLASS: puts("ncclass"); break;
+		case I_CCLASS: printf("cclass"); dumpcclass(inst->cc); break;
+		case I_NCCLASS: printf("ncclass"); dumpcclass(inst->cc); break;
 		case I_REF: printf("ref %d\n", inst->n); break;
 		case I_BOL: puts("bol"); break;
 		case I_EOL: puts("eol"); break;
@@ -809,27 +853,40 @@ static void dumpprog(Reprog *prog)
 }
 #endif
 
-Reprog *regcomp(const char *pattern, int cflags, const char **errorp)
+Reprog *regcompx(void *(*alloc)(void *ctx, void *p, int n), void *ctx,
+	const char *pattern, int cflags, const char **errorp)
 {
 	struct cstate g;
 	Renode *node;
 	Reinst *split, *jump;
-	int i;
+	int i, n;
 
-	g.prog = malloc(sizeof (Reprog));
-	g.pstart = g.pend = malloc(sizeof (Renode) * strlen(pattern) * 2);
+	g.pstart = NULL;
+	g.prog = NULL;
 
 	if (setjmp(g.kaboom)) {
 		if (errorp) *errorp = g.error;
-		free(g.pstart);
-		free(g.prog);
+		alloc(ctx, g.pstart, 0);
+		alloc(ctx, g.prog, 0);
 		return NULL;
+	}
+
+	g.prog = alloc(ctx, NULL, sizeof (Reprog));
+	if (!g.prog)
+		die(&g, "cannot allocate regular expression");
+	n = strlen(pattern) * 2;
+	if (n > REG_MAXPROG)
+		die(&g, "program too large");
+	if (n > 0) {
+		g.pstart = g.pend = alloc(ctx, NULL, sizeof (Renode) * n);
+		if (!g.pstart)
+			die(&g, "cannot allocate regular expression parse list");
 	}
 
 	g.source = pattern;
 	g.ncclass = 0;
 	g.nsub = 1;
-	for (i = 0; i < MAXSUB; ++i)
+	for (i = 0; i < REG_MAXSUB; ++i)
 		g.sub[i] = 0;
 
 	g.prog->flags = cflags;
@@ -838,11 +895,22 @@ Reprog *regcomp(const char *pattern, int cflags, const char **errorp)
 	node = parsealt(&g);
 	if (g.lookahead == ')')
 		die(&g, "unmatched ')'");
-	if (g.lookahead != 0)
+	if (g.lookahead != EOF)
 		die(&g, "syntax error");
 
+#ifdef TEST
+	dumpnode(node);
+	putchar('\n');
+#endif
+
+	n = 6 + count(&g, node);
+	if (n < 0 || n > REG_MAXPROG)
+		die(&g, "program too large");
+
 	g.prog->nsub = g.nsub;
-	g.prog->start = g.prog->end = malloc((count(node) + 6) * sizeof (Reinst));
+	g.prog->start = g.prog->end = alloc(ctx, NULL, n * sizeof (Reinst));
+	if (!g.prog->start)
+		die(&g, "cannot allocate regular expression instruction list");
 
 	split = emit(g.prog, I_SPLIT);
 	split->x = split + 3;
@@ -856,23 +924,36 @@ Reprog *regcomp(const char *pattern, int cflags, const char **errorp)
 	emit(g.prog, I_END);
 
 #ifdef TEST
-	dumpnode(node);
-	putchar('\n');
 	dumpprog(g.prog);
 #endif
 
-	free(g.pstart);
+	alloc(ctx, g.pstart, 0);
 
 	if (errorp) *errorp = NULL;
 	return g.prog;
 }
 
-void regfree(Reprog *prog)
+void regfreex(void *(*alloc)(void *ctx, void *p, int n), void *ctx, Reprog *prog)
 {
 	if (prog) {
-		free(prog->start);
-		free(prog);
+		alloc(ctx, prog->start, 0);
+		alloc(ctx, prog, 0);
 	}
+}
+
+static void *default_alloc(void *ctx, void *p, int n)
+{
+	return realloc(p, (size_t)n);
+}
+
+Reprog *regcomp(const char *pattern, int cflags, const char **errorp)
+{
+	return regcompx(default_alloc, NULL, pattern, cflags, errorp);
+}
+
+void regfree(Reprog *prog)
+{
+	regfreex(default_alloc, NULL, prog);
 }
 
 /* Match */
@@ -909,7 +990,7 @@ static int incclasscanon(Reclass *cc, Rune c)
 	return 0;
 }
 
-static int strncmpcanon(const char *a, const char *b, unsigned int n)
+static int strncmpcanon(const char *a, const char *b, int n)
 {
 	Rune ra, rb;
 	int c;
@@ -925,169 +1006,164 @@ static int strncmpcanon(const char *a, const char *b, unsigned int n)
 	return 0;
 }
 
-struct Rethread {
-	Reinst *pc;
-	const char *sp;
-	Resub sub;
-};
-
-static void spawn(Rethread *t, Reinst *pc, const char *sp, Resub *sub)
+static int match(Reinst *pc, const char *sp, const char *bol, int flags, Resub *out, int depth)
 {
-	t->pc = pc;
-	t->sp = sp;
-	memcpy(&t->sub, sub, sizeof t->sub);
-}
-
-static int match(Reinst *pc, const char *sp, const char *bol, int flags, Resub *out)
-{
-	Rethread ready[MAXTHREAD];
 	Resub scratch;
-	Resub sub;
-	Rune c;
-	unsigned int nready;
+	int result;
 	int i;
+	Rune c;
 
-	/* queue initial thread */
-	spawn(ready + 0, pc, sp, out);
-	nready = 1;
+	/* stack overflow */
+	if (depth > REG_MAXREC)
+		return -1;
 
-	/* run threads in stack order */
-	while (nready > 0) {
-		--nready;
-		pc = ready[nready].pc;
-		sp = ready[nready].sp;
-		memcpy(&sub, &ready[nready].sub, sizeof sub);
-		for (;;) {
-			switch (pc->opcode) {
-			case I_END:
-				for (i = 0; i < MAXSUB; ++i) {
-					out->sub[i].sp = sub.sub[i].sp;
-					out->sub[i].ep = sub.sub[i].ep;
-				}
+	for (;;) {
+		switch (pc->opcode) {
+		case I_END:
+			return 0;
+		case I_JUMP:
+			pc = pc->x;
+			break;
+		case I_SPLIT:
+			scratch = *out;
+			result = match(pc->x, sp, bol, flags, &scratch, depth+1);
+			if (result == -1)
+				return -1;
+			if (result == 0) {
+				*out = scratch;
+				return 0;
+			}
+			pc = pc->y;
+			break;
+
+		case I_PLA:
+			result = match(pc->x, sp, bol, flags, out, depth+1);
+			if (result == -1)
+				return -1;
+			if (result == 1)
 				return 1;
-			case I_JUMP:
-				pc = pc->x;
-				continue;
-			case I_SPLIT:
-				if (nready >= MAXTHREAD) {
-					fprintf(stderr, "regexec: backtrack overflow!\n");
-					return 0;
-				}
-				spawn(&ready[nready++], pc->y, sp, &sub);
-				pc = pc->x;
-				continue;
+			pc = pc->y;
+			break;
+		case I_NLA:
+			scratch = *out;
+			result = match(pc->x, sp, bol, flags, &scratch, depth+1);
+			if (result == -1)
+				return -1;
+			if (result == 0)
+				return 1;
+			pc = pc->y;
+			break;
 
-			case I_PLA:
-				if (!match(pc->x, sp, bol, flags, &sub))
-					goto dead;
-				pc = pc->y;
-				continue;
-			case I_NLA:
-				memcpy(&scratch, &sub, sizeof scratch);
-				if (match(pc->x, sp, bol, flags, &scratch))
-					goto dead;
-				pc = pc->y;
-				continue;
-
-			case I_ANYNL:
-				sp += chartorune(&c, sp);
-				if (c == 0)
-					goto dead;
-				break;
-			case I_ANY:
-				sp += chartorune(&c, sp);
-				if (c == 0)
-					goto dead;
-				if (isnewline(c))
-					goto dead;
-				break;
-			case I_CHAR:
-				sp += chartorune(&c, sp);
-				if (c == 0)
-					goto dead;
-				if (flags & REG_ICASE)
-					c = canon(c);
-				if (c != pc->c)
-					goto dead;
-				break;
-			case I_CCLASS:
-				sp += chartorune(&c, sp);
-				if (c == 0)
-					goto dead;
-				if (flags & REG_ICASE) {
-					if (!incclasscanon(pc->cc, canon(c)))
-						goto dead;
-				} else {
-					if (!incclass(pc->cc, c))
-						goto dead;
-				}
-				break;
-			case I_NCCLASS:
-				sp += chartorune(&c, sp);
-				if (c == 0)
-					goto dead;
-				if (flags & REG_ICASE) {
-					if (incclasscanon(pc->cc, canon(c)))
-						goto dead;
-				} else {
-					if (incclass(pc->cc, c))
-						goto dead;
-				}
-				break;
-			case I_REF:
-				i = sub.sub[pc->n].ep - sub.sub[pc->n].sp;
-				if (flags & REG_ICASE) {
-					if (strncmpcanon(sp, sub.sub[pc->n].sp, i))
-						goto dead;
-				} else {
-					if (strncmp(sp, sub.sub[pc->n].sp, i))
-						goto dead;
-				}
-				if (i > 0)
-					sp += i;
-				break;
-
-			case I_BOL:
-				if (sp == bol && !(flags & REG_NOTBOL))
-					break;
-				if (flags & REG_NEWLINE)
-					if (sp > bol && isnewline(sp[-1]))
-						break;
-				goto dead;
-			case I_EOL:
-				if (*sp == 0)
-					break;
-				if (flags & REG_NEWLINE)
-					if (isnewline(*sp))
-						break;
-				goto dead;
-			case I_WORD:
-				i = sp > bol && iswordchar(sp[-1]);
-				i ^= iswordchar(sp[0]);
-				if (i)
-					break;
-				goto dead;
-			case I_NWORD:
-				i = sp > bol && iswordchar(sp[-1]);
-				i ^= iswordchar(sp[0]);
-				if (!i)
-					break;
-				goto dead;
-
-			case I_LPAR:
-				sub.sub[pc->n].sp = sp;
-				break;
-			case I_RPAR:
-				sub.sub[pc->n].ep = sp;
-				break;
-			default:
-				goto dead;
+		case I_ANYNL:
+			if (!*sp) return 1;
+			sp += chartorune(&c, sp);
+			pc = pc + 1;
+			break;
+		case I_ANY:
+			if (!*sp) return 1;
+			sp += chartorune(&c, sp);
+			if (isnewline(c))
+				return 1;
+			pc = pc + 1;
+			break;
+		case I_CHAR:
+			if (!*sp) return 1;
+			sp += chartorune(&c, sp);
+			if (flags & REG_ICASE)
+				c = canon(c);
+			if (c != pc->c)
+				return 1;
+			pc = pc + 1;
+			break;
+		case I_CCLASS:
+			if (!*sp) return 1;
+			sp += chartorune(&c, sp);
+			if (flags & REG_ICASE) {
+				if (!incclasscanon(pc->cc, canon(c)))
+					return 1;
+			} else {
+				if (!incclass(pc->cc, c))
+					return 1;
 			}
 			pc = pc + 1;
+			break;
+		case I_NCCLASS:
+			if (!*sp) return 1;
+			sp += chartorune(&c, sp);
+			if (flags & REG_ICASE) {
+				if (incclasscanon(pc->cc, canon(c)))
+					return 1;
+			} else {
+				if (incclass(pc->cc, c))
+					return 1;
+			}
+			pc = pc + 1;
+			break;
+		case I_REF:
+			i = out->sub[pc->n].ep - out->sub[pc->n].sp;
+			if (flags & REG_ICASE) {
+				if (strncmpcanon(sp, out->sub[pc->n].sp, i))
+					return 1;
+			} else {
+				if (strncmp(sp, out->sub[pc->n].sp, i))
+					return 1;
+			}
+			if (i > 0)
+				sp += i;
+			pc = pc + 1;
+			break;
+
+		case I_BOL:
+			if (sp == bol && !(flags & REG_NOTBOL)) {
+				pc = pc + 1;
+				break;
+			}
+			if (flags & REG_NEWLINE) {
+				if (sp > bol && isnewline(sp[-1])) {
+					pc = pc + 1;
+					break;
+				}
+			}
+			return 1;
+		case I_EOL:
+			if (*sp == 0) {
+				pc = pc + 1;
+				break;
+			}
+			if (flags & REG_NEWLINE) {
+				if (isnewline(*sp)) {
+					pc = pc + 1;
+					break;
+				}
+			}
+			return 1;
+		case I_WORD:
+			i = sp > bol && iswordchar(sp[-1]);
+			i ^= iswordchar(sp[0]);
+			if (!i)
+				return 1;
+			pc = pc + 1;
+			break;
+		case I_NWORD:
+			i = sp > bol && iswordchar(sp[-1]);
+			i ^= iswordchar(sp[0]);
+			if (i)
+				return 1;
+			pc = pc + 1;
+			break;
+
+		case I_LPAR:
+			out->sub[pc->n].sp = sp;
+			pc = pc + 1;
+			break;
+		case I_RPAR:
+			out->sub[pc->n].ep = sp;
+			pc = pc + 1;
+			break;
+		default:
+			return 1;
 		}
-dead: ;
 	}
-	return 0;
 }
 
 int regexec(Reprog *prog, const char *sp, Resub *sub, int eflags)
@@ -1099,10 +1175,10 @@ int regexec(Reprog *prog, const char *sp, Resub *sub, int eflags)
 		sub = &scratch;
 
 	sub->nsub = prog->nsub;
-	for (i = 0; i < MAXSUB; ++i)
+	for (i = 0; i < REG_MAXSUB; ++i)
 		sub->sub[i].sp = sub->sub[i].ep = NULL;
 
-	return !match(prog->start, sp, sp, prog->flags | eflags, sub);
+	return match(prog->start, sp, sp, prog->flags | eflags, sub, 0);
 }
 
 #ifdef TEST
@@ -1112,7 +1188,7 @@ int main(int argc, char **argv)
 	const char *s;
 	Reprog *p;
 	Resub m;
-	unsigned int i;
+	int i;
 
 	if (argc > 1) {
 		p = regcomp(argv[1], 0, &error);

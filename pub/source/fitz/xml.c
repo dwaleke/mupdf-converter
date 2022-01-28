@@ -1,6 +1,36 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #include "mupdf/fitz.h"
 
-static const struct { const char *ent; int ucs; } html_entities[] = {
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+#include <gumbo.h>
+
+/* #define FZ_XML_SEQ */
+
+static const struct { const char *name; int c; } html_entities[] = {
 	{"nbsp",160}, {"iexcl",161}, {"cent",162}, {"pound",163},
 	{"curren",164}, {"yen",165}, {"brvbar",166}, {"sect",167},
 	{"uml",168}, {"copy",169}, {"ordf",170}, {"laquo",171},
@@ -65,58 +95,116 @@ static const struct { const char *ent; int ucs; } html_entities[] = {
 
 struct parser
 {
+	fz_pool *pool;
 	fz_xml *head;
 	int preserve_white;
 	int depth;
+#ifdef FZ_XML_SEQ
+	int seq;
+#endif
 };
 
 struct attribute
 {
-	char name[40];
 	char *value;
 	struct attribute *next;
+	char name[1];
 };
 
-struct fz_xml_s
+struct fz_xml_doc
 {
-	char name[40];
-	char *text;
-	struct attribute *atts;
-	fz_xml *up, *down, *tail, *prev, *next;
+	fz_pool *pool;
+	fz_xml *root;
 };
 
-static inline void indent(int n)
+/* Text nodes never use the down pointer. Therefore
+ * if the down pointer is the MAGIC_TEXT value, we
+ * know there is text. */
+struct fz_xml
 {
-	while (n--) putchar(' ');
+	fz_xml *up, *down, *prev, *next;
+#ifdef FZ_XML_SEQ
+	int seq;
+#endif
+	union
+	{
+		char text[1];
+		struct
+		{
+			struct attribute *atts;
+			char name[1];
+		} d;
+	} u;
+};
+
+#define MAGIC_TEXT ((fz_xml *)1)
+#define FZ_TEXT_ITEM(item) (item && item->down == MAGIC_TEXT)
+
+static void xml_indent(int n)
+{
+	while (n--) {
+		putchar(' ');
+		putchar(' ');
+	}
 }
 
 void fz_debug_xml(fz_xml *item, int level)
 {
-	if (item->text)
+	char *s = fz_xml_text(item);
+	if (s)
 	{
-		printf("%s\n", item->text);
+		int c;
+		xml_indent(level);
+		putchar('"');
+		while (*s) {
+			s += fz_chartorune(&c, s);
+			switch (c) {
+			default:
+				if (c > 0xFFFF)
+					printf("\\u{%X}", c);
+				else if (c < 32 || c > 127)
+					printf("\\u%04X", c);
+				else
+					putchar(c);
+				break;
+			case '\\': putchar('\\'); putchar('\\'); break;
+			case '\b': putchar('\\'); putchar('b'); break;
+			case '\f': putchar('\\'); putchar('f'); break;
+			case '\n': putchar('\\'); putchar('n'); break;
+			case '\r': putchar('\\'); putchar('r'); break;
+			case '\t': putchar('\\'); putchar('t'); break;
+			}
+		}
+		putchar('"');
+#ifdef FZ_XML_SEQ
+		printf(" <%d>", item->seq);
+#endif
+		putchar('\n');
 	}
 	else
 	{
 		fz_xml *child;
 		struct attribute *att;
 
-		indent(level);
-		printf("<%s", item->name);
-		for (att = item->atts; att; att = att->next)
-			printf(" %s=\"%s\"", att->name, att->value);
-		if (item->down)
+		xml_indent(level);
+#ifdef FZ_XML_SEQ
+		printf("(%s <%d>\n", item->u.d.name, item->seq);
+#else
+		printf("(%s\n", item->u.d.name);
+#endif
+		for (att = item->u.d.atts; att; att = att->next)
 		{
-			printf(">\n");
-			for (child = item->down; child; child = child->next)
-				fz_debug_xml(child, level + 1);
-			indent(level);
-			printf("</%s>\n", item->name);
+			xml_indent(level);
+			printf("=%s %s\n", att->name, att->value);
 		}
-		else
-		{
-			printf("/>\n");
-		}
+		for (child = fz_xml_down(item); child; child = child->next)
+			fz_debug_xml(child, level + 1);
+		xml_indent(level);
+#ifdef FZ_XML_SEQ
+		printf(")%s <%d>\n", item->u.d.name, item->seq);
+#else
+		printf(")%s\n", item->u.d.name);
+#endif
 	}
 }
 
@@ -137,42 +225,50 @@ fz_xml *fz_xml_up(fz_xml *item)
 
 fz_xml *fz_xml_down(fz_xml *item)
 {
-	return item ? item->down : NULL;
+	return item && !FZ_TEXT_ITEM(item) ? item->down : NULL;
 }
 
 char *fz_xml_text(fz_xml *item)
 {
-	return item ? item->text : NULL;
+	return (item && FZ_TEXT_ITEM(item)) ? item->u.text : NULL;
 }
 
 char *fz_xml_tag(fz_xml *item)
 {
-	return item && item->name[0] ? item->name : NULL;
+	return item && !FZ_TEXT_ITEM(item) && item->u.d.name[0] ? item->u.d.name : NULL;
 }
 
 int fz_xml_is_tag(fz_xml *item, const char *name)
 {
-	if (!item)
+	if (!item || FZ_TEXT_ITEM(item))
 		return 0;
-	return !strcmp(item->name, name);
+	return !strcmp(item->u.d.name, name);
 }
 
 char *fz_xml_att(fz_xml *item, const char *name)
 {
 	struct attribute *att;
-	if (!item)
+	if (!item || FZ_TEXT_ITEM(item))
 		return NULL;
-	for (att = item->atts; att; att = att->next)
+	for (att = item->u.d.atts; att; att = att->next)
 		if (!strcmp(att->name, name))
 			return att->value;
 	return NULL;
+}
+
+char *fz_xml_att_alt(fz_xml *item, const char *one, const char *two)
+{
+	char *val = fz_xml_att(item, one);
+	if (!val)
+		val = fz_xml_att(item, two);
+	return val;
 }
 
 fz_xml *fz_xml_find(fz_xml *item, const char *tag)
 {
 	while (item)
 	{
-		if (!strcmp(item->name, tag))
+		if (!FZ_TEXT_ITEM(item) && !strcmp(item->u.d.name, tag))
 			return item;
 		item = item->next;
 	}
@@ -189,47 +285,68 @@ fz_xml *fz_xml_find_next(fz_xml *item, const char *tag)
 fz_xml *fz_xml_find_down(fz_xml *item, const char *tag)
 {
 	if (item)
-		item = item->down;
+		item = fz_xml_down(item);
 	return fz_xml_find(item, tag);
 }
 
-static void xml_free_attribute(fz_context *ctx, struct attribute *att)
+int fz_xml_att_eq(fz_xml *item, const char *name, const char *match)
 {
-	while (att) {
-		struct attribute *next = att->next;
-		if (att->value)
-			fz_free(ctx, att->value);
-		fz_free(ctx, att);
-		att = next;
-	}
+	const char *val = fz_xml_att(item, name);
+
+	return val ? !strcmp(val, match) : 0;
 }
 
-void fz_drop_xml(fz_context *ctx, fz_xml *item)
+fz_xml *fz_xml_find_match(fz_xml *item, const char *tag, const char *att, const char *match)
 {
-	while (item)
+	while (1)
 	{
-		fz_xml *next = item->next;
-		if (item->text)
-			fz_free(ctx, item->text);
-		if (item->atts)
-			xml_free_attribute(ctx, item->atts);
-		if (item->down)
-			fz_drop_xml(ctx, item->down);
-		fz_free(ctx, item);
-		item = next;
+		item = fz_xml_find(item, tag);
+		if (item == NULL || fz_xml_att_eq(item, att, match))
+			break;
+		item = item->next;
 	}
+
+	return item;
 }
 
-void fz_detach_xml(fz_xml *node)
+fz_xml *fz_xml_find_next_match(fz_xml *item, const char *tag, const char *att, const char *match)
+{
+	do
+	{
+		item = fz_xml_find_next(item, tag);
+	}
+	while (item != NULL && !fz_xml_att_eq(item, att, match));
+
+	return item;
+}
+
+fz_xml *fz_xml_find_down_match(fz_xml *item, const char *tag, const char *att, const char *match)
+{
+	return fz_xml_find_match(fz_xml_down(item), tag, att, match);
+}
+
+fz_xml *fz_xml_root(fz_xml_doc *xml)
+{
+	return xml ? xml->root : NULL;
+}
+
+void fz_drop_xml(fz_context *ctx, fz_xml_doc *xml)
+{
+	if (xml)
+		fz_drop_pool(ctx, xml->pool);
+}
+
+void fz_detach_xml(fz_context *ctx, fz_xml_doc *xml, fz_xml *node)
 {
 	if (node->up)
 		node->up->down = NULL;
+	xml->root = node;
 }
 
-static int xml_parse_entity(int *c, char *a)
+static size_t xml_parse_entity(int *c, const char *a)
 {
 	char *b;
-	int i;
+	size_t i;
 
 	if (a[1] == '#') {
 		if (a[2] == 'x')
@@ -262,9 +379,9 @@ static int xml_parse_entity(int *c, char *a)
 
 	/* We should only be doing this for XHTML, but it shouldn't be a problem. */
 	for (i = 0; i < nelem(html_entities); ++i) {
-		unsigned int n = strlen(html_entities[i].ent);
-		if (!memcmp(a+1, html_entities[i].ent, n) && a[1+n] == ';') {
-			*c = html_entities[i].ucs;
+		size_t n = strlen(html_entities[i].name);
+		if (!strncmp(a+1, html_entities[i].name, n) && a[n+1] == ';') {
+			*c = html_entities[i].c;
 			return n + 2;
 		}
 	}
@@ -286,68 +403,84 @@ static inline int iswhite(int c)
 	return c == ' ' || c == '\r' || c == '\n' || c == '\t';
 }
 
-static void xml_emit_open_tag(fz_context *ctx, struct parser *parser, char *a, char *b)
+static void xml_emit_open_tag(fz_context *ctx, struct parser *parser, const char *a, const char *b, int is_text)
 {
 	fz_xml *head, *tail;
-	char *ns;
+	const char *ns;
+	size_t size;
 
-	/* skip namespace prefix */
-	for (ns = a; ns < b; ++ns)
-		if (*ns == ':')
-			a = ns + 1;
+	if (is_text)
+		size = offsetof(fz_xml, u.text) + b-a+1;
+	else
+	{
+		/* skip namespace prefix */
+		for (ns = a; ns < b - 1; ++ns)
+			if (*ns == ':')
+				a = ns + 1;
 
-	head = fz_malloc_struct(ctx, fz_xml);
-	if (b - a > sizeof(head->name) - 1)
-		b = a + sizeof(head->name) - 1;
-	memcpy(head->name, a, b - a);
-	head->name[b - a] = 0;
+		size = offsetof(fz_xml, u.d.name) + b-a+1;
+	}
+	head = fz_pool_alloc(ctx, parser->pool, size);
 
-	head->atts = NULL;
-	head->text = NULL;
+	if (is_text)
+		head->down = MAGIC_TEXT;
+	else
+	{
+		memcpy(head->u.d.name, a, b - a);
+		head->u.d.name[b - a] = 0;
+		head->u.d.atts = NULL;
+		head->down = NULL;
+	}
+
 	head->up = parser->head;
-	head->down = NULL;
-	head->prev = NULL;
 	head->next = NULL;
+#ifdef FZ_XML_SEQ
+	head->seq = parser->seq++;
+#endif
 
+	/* During construction, we use head->next to mean "the
+	 * tail of the children. When we close the tag, we
+	 * rewrite it to be NULL. */
 	if (!parser->head->down) {
 		parser->head->down = head;
-		parser->head->tail = head;
+		parser->head->next = head;
+		head->prev = NULL;
 	}
 	else {
-		tail = parser->head->tail;
+		tail = parser->head->next;
 		tail->next = head;
 		head->prev = tail;
-		parser->head->tail = head;
+		parser->head->next = head;
 	}
 
 	parser->head = head;
 	parser->depth++;
 }
 
-static void xml_emit_att_name(fz_context *ctx, struct parser *parser, char *a, char *b)
+static void xml_emit_att_name(fz_context *ctx, struct parser *parser, const char *a, const char *b)
 {
 	fz_xml *head = parser->head;
 	struct attribute *att;
+	size_t size;
 
-	att = fz_malloc_struct(ctx, struct attribute);
-	if (b - a > sizeof(att->name) - 1)
-		b = a + sizeof(att->name) - 1;
+	size = offsetof(struct attribute, name) + b-a+1;
+	att = fz_pool_alloc(ctx, parser->pool, size);
 	memcpy(att->name, a, b - a);
 	att->name[b - a] = 0;
 	att->value = NULL;
-	att->next = head->atts;
-	head->atts = att;
+	att->next = head->u.d.atts;
+	head->u.d.atts = att;
 }
 
-static void xml_emit_att_value(fz_context *ctx, struct parser *parser, char *a, char *b)
+static void xml_emit_att_value(fz_context *ctx, struct parser *parser, const char *a, const char *b)
 {
 	fz_xml *head = parser->head;
-	struct attribute *att = head->atts;
+	struct attribute *att = head->u.d.atts;
 	char *s;
 	int c;
 
 	/* entities are all longer than UTFmax so runetochar is safe */
-	s = att->value = fz_malloc(ctx, b - a + 1);
+	s = att->value = fz_pool_alloc(ctx, parser->pool, b - a + 1);
 	while (a < b) {
 		if (*a == '&') {
 			a += xml_parse_entity(&c, a);
@@ -363,14 +496,15 @@ static void xml_emit_att_value(fz_context *ctx, struct parser *parser, char *a, 
 static void xml_emit_close_tag(fz_context *ctx, struct parser *parser)
 {
 	parser->depth--;
+	parser->head->next = NULL;
 	if (parser->head->up)
 		parser->head = parser->head->up;
 }
 
-static void xml_emit_text(fz_context *ctx, struct parser *parser, char *a, char *b)
+static void xml_emit_text(fz_context *ctx, struct parser *parser, const char *a, const char *b)
 {
-	static char *empty = "";
 	fz_xml *head;
+	const char *p;
 	char *s;
 	int c;
 
@@ -381,18 +515,18 @@ static void xml_emit_text(fz_context *ctx, struct parser *parser, char *a, char 
 	/* Skip all-whitespace text nodes */
 	if (!parser->preserve_white)
 	{
-		for (s = a; s < b; s++)
-			if (!iswhite(*s))
+		for (p = a; p < b; p++)
+			if (!iswhite(*p))
 				break;
-		if (s == b)
+		if (p == b)
 			return;
 	}
 
-	xml_emit_open_tag(ctx, parser, empty, empty);
+	xml_emit_open_tag(ctx, parser, a, b, 1);
 	head = parser->head;
 
 	/* entities are all longer than UTFmax so runetochar is safe */
-	s = head->text = fz_malloc(ctx, b - a + 1);
+	s = fz_xml_text(head);
 	while (a < b) {
 		if (*a == '&') {
 			a += xml_parse_entity(&c, a);
@@ -407,16 +541,15 @@ static void xml_emit_text(fz_context *ctx, struct parser *parser, char *a, char 
 	xml_emit_close_tag(ctx, parser);
 }
 
-static void xml_emit_cdata(fz_context *ctx, struct parser *parser, char *a, char *b)
+static void xml_emit_cdata(fz_context *ctx, struct parser *parser, const char *a, const char *b)
 {
-	static char *empty = "";
 	fz_xml *head;
 	char *s;
 
-	xml_emit_open_tag(ctx, parser, empty, empty);
+	xml_emit_open_tag(ctx, parser, a, b, 1);
 	head = parser->head;
 
-	s = head->text = fz_malloc(ctx, b - a + 1);
+	s = head->u.text;
 	while (a < b)
 		*s++ = *a++;
 	*s = 0;
@@ -424,16 +557,39 @@ static void xml_emit_cdata(fz_context *ctx, struct parser *parser, char *a, char
 	xml_emit_close_tag(ctx, parser);
 }
 
-static char *xml_parse_document_imp(fz_context *ctx, struct parser *parser, char *p)
+static int close_tag(fz_context *ctx, struct parser *parser, const char *mark, const char *p)
 {
-	char *mark;
+	const char *ns, *tag;
+
+	/* skip namespace prefix */
+	for (ns = mark; ns < p - 1; ++ns)
+		if (*ns == ':')
+			mark = ns + 1;
+
+	tag = fz_xml_tag(parser->head);
+	if (tag && strncmp(tag, mark, p-mark) == 0 && tag[p-mark] == 0)
+	{
+		xml_emit_close_tag(ctx, parser);
+		return 0;
+	}
+	return 1;
+}
+
+static char *xml_parse_document_imp(fz_context *ctx, struct parser *parser, const char *p)
+{
+	const char *mark;
 	int quote;
 
 parse_text:
 	mark = p;
 	while (*p && *p != '<') ++p;
-	if (mark != p) xml_emit_text(ctx, parser, mark, p);
-	if (*p == '<') { ++p; goto parse_element; }
+	if (*p == '<') {
+		if (mark < p)
+			xml_emit_text(ctx, parser, mark, p);
+		++p;
+		goto parse_element;
+	} else if (mark < p)
+		xml_emit_text(ctx, parser, mark, p);
 	return NULL;
 
 parse_element:
@@ -446,9 +602,11 @@ parse_element:
 	return "syntax error in element";
 
 parse_comment:
+	if (p[0]=='D' && p[1]=='O' && p[2]=='C' && p[3]=='T' && p[4]=='Y' && p[5]=='P' && p[6]=='E')
+		goto parse_declaration;
+	if (p[0]=='E' && p[1]=='N' && p[2]=='T' && p[3]=='I' && p[4]=='T' && p[5]=='Y')
+		goto parse_declaration;
 	if (*p == '[') goto parse_cdata;
-	if (*p == 'D' && !memcmp(p, "DOCTYPE", 7)) goto parse_declaration;
-	if (*p == 'E' && !memcmp(p, "ENTITY", 6)) goto parse_declaration;
 	if (*p++ != '-') return "syntax error in comment (<! not followed by --)";
 	if (*p++ != '-') return "syntax error in comment (<!- not followed by -)";
 	while (*p) {
@@ -491,19 +649,24 @@ parse_processing_instruction:
 
 parse_closing_element:
 	while (iswhite(*p)) ++p;
+	mark = p;
 	while (isname(*p)) ++p;
+	if (close_tag(ctx, parser, mark, p))
+		return "opening and closing tag mismatch";
 	while (iswhite(*p)) ++p;
 	if (*p != '>')
 		return "syntax error in closing element";
-	xml_emit_close_tag(ctx, parser);
 	++p;
 	goto parse_text;
 
 parse_element_name:
 	mark = p;
 	while (isname(*p)) ++p;
-	xml_emit_open_tag(ctx, parser, mark, p);
-	if (*p == '>') { ++p; goto parse_text; }
+	xml_emit_open_tag(ctx, parser, mark, p, 0);
+	if (*p == '>') {
+		++p;
+		goto parse_text;
+	}
 	if (p[0] == '/' && p[1] == '>') {
 		xml_emit_close_tag(ctx, parser);
 		p += 2;
@@ -517,7 +680,10 @@ parse_attributes:
 	while (iswhite(*p)) ++p;
 	if (isname(*p))
 		goto parse_attribute_name;
-	if (*p == '>') { ++p; goto parse_text; }
+	if (*p == '>') {
+		++p;
+		goto parse_text;
+	}
 	if (p[0] == '/' && p[1] == '>') {
 		xml_emit_close_tag(ctx, parser);
 		p += 2;
@@ -547,15 +713,57 @@ parse_attribute_value:
 	return "end of data in attribute value";
 }
 
-static char *convert_to_utf8(fz_context *doc, unsigned char *s, int n, int *dofree)
+static int startswith(const char *a, const char *b)
 {
-	unsigned char *e = s + n;
+	return !fz_strncasecmp(a, b, strlen(b));
+}
+
+static const unsigned short *find_xml_encoding(char *s)
+{
+	const unsigned short *table = NULL;
+	char *end, *xml, *enc;
+
+	end = strchr(s, '>');
+	if (end)
+	{
+		*end = 0;
+		xml = strstr(s, "<?xml");
+		if (xml)
+		{
+			enc = strstr(xml, "encoding=");
+			if (enc)
+			{
+				enc += 10;
+				if (startswith(enc, "iso-8859-1") || startswith(enc, "latin1"))
+					table = fz_unicode_from_iso8859_1;
+				else if (startswith(enc, "iso-8859-7") || startswith(enc, "greek"))
+					table = fz_unicode_from_iso8859_7;
+				else if (startswith(enc, "koi8"))
+					table = fz_unicode_from_koi8u;
+				else if (startswith(enc, "windows-1250"))
+					table = fz_unicode_from_windows_1250;
+				else if (startswith(enc, "windows-1251"))
+					table = fz_unicode_from_windows_1251;
+				else if (startswith(enc, "windows-1252"))
+					table = fz_unicode_from_windows_1252;
+			}
+		}
+		*end = '>';
+	}
+
+	return table;
+}
+
+static char *convert_to_utf8(fz_context *ctx, unsigned char *s, size_t n, int *dofree)
+{
+	const unsigned short *table;
+	const unsigned char *e = s + n;
 	char *dst, *d;
 	int c;
 
 	if (s[0] == 0xFE && s[1] == 0xFF) {
 		s += 2;
-		dst = d = fz_malloc(doc, n * 2);
+		dst = d = Memento_label(fz_malloc(ctx, n * FZ_UTFMAX), "utf8_from_be");
 		while (s + 1 < e) {
 			c = s[0] << 8 | s[1];
 			d += fz_runetochar(d, c);
@@ -568,11 +776,23 @@ static char *convert_to_utf8(fz_context *doc, unsigned char *s, int n, int *dofr
 
 	if (s[0] == 0xFF && s[1] == 0xFE) {
 		s += 2;
-		dst = d = fz_malloc(doc, n * 2);
+		dst = d = Memento_label(fz_malloc(ctx, n * FZ_UTFMAX), "utf8_from_le");
 		while (s + 1 < e) {
 			c = s[0] | s[1] << 8;
 			d += fz_runetochar(d, c);
 			s += 2;
+		}
+		*d = 0;
+		*dofree = 1;
+		return dst;
+	}
+
+	table = find_xml_encoding((char*)s);
+	if (table) {
+		dst = d = Memento_label(fz_malloc(ctx, n * FZ_UTFMAX), "utf8");
+		while (*s) {
+			c = table[*s++];
+			d += fz_runetochar(d, c);
 		}
 		*d = 0;
 		*dofree = 1;
@@ -587,28 +807,51 @@ static char *convert_to_utf8(fz_context *doc, unsigned char *s, int n, int *dofr
 	return (char*)s;
 }
 
-fz_xml *
-fz_parse_xml(fz_context *ctx, unsigned char *s, int n, int preserve_white)
+fz_xml_doc *
+fz_parse_xml(fz_context *ctx, fz_buffer *buf, int preserve_white)
 {
 	struct parser parser;
+	fz_xml_doc *xml = NULL;
 	fz_xml root, *node;
-	char *p, *error;
-	int dofree;
+	char *p = NULL;
+	char *error;
+	int dofree = 0;
+	unsigned char *s;
+	size_t n;
 
-	/* s is already null-terminated (see xps_new_part) */
+	fz_var(dofree);
+	fz_var(p);
+
+	/* ensure we are zero-terminated */
+	fz_terminate_buffer(ctx, buf);
+	n = fz_buffer_storage(ctx, buf, &s);
 
 	memset(&root, 0, sizeof(root));
+	parser.pool = fz_new_pool(ctx);
 	parser.head = &root;
 	parser.preserve_white = preserve_white;
 	parser.depth = 0;
-
-	p = convert_to_utf8(ctx, s, n, &dofree);
+#ifdef FZ_XML_SEQ
+	parser.seq = 0;
+#endif
 
 	fz_try(ctx)
 	{
+		p = convert_to_utf8(ctx, s, n, &dofree);
+
 		error = xml_parse_document_imp(ctx, &parser, p);
 		if (error)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "%s", error);
+			fz_throw(ctx, FZ_ERROR_SYNTAX, "%s", error);
+
+		for (node = parser.head; node; node = node->up)
+			node->next = NULL;
+
+		for (node = root.down; node; node = node->next)
+			node->up = NULL;
+
+		xml = fz_pool_alloc(ctx, parser.pool, sizeof *xml);
+		xml->pool = parser.pool;
+		xml->root = root.down;
 	}
 	fz_always(ctx)
 	{
@@ -617,11 +860,164 @@ fz_parse_xml(fz_context *ctx, unsigned char *s, int n, int preserve_white)
 	}
 	fz_catch(ctx)
 	{
-		fz_drop_xml(ctx, root.down);
+		fz_drop_pool(ctx, parser.pool);
 		fz_rethrow(ctx);
 	}
 
-	for (node = root.down; node; node = node->next)
-		node->up = NULL;
-	return root.down;
+	return xml;
+}
+
+/*
+	Parse the contents of buffer into a tree of XML nodes, using the HTML5 syntax.
+
+	Gumbo doesn't check for malloc errors. Use our pool allocator and let it longjmp
+	out of Gumbo on allocation errors. At the end (success or fail) we release the
+	pool used for Gumbo's parse tree all at once.
+*/
+
+struct mem_gumbo {
+	fz_context *ctx;
+	fz_pool *pool;
+};
+
+static void *alloc_gumbo(void *ctx, size_t size)
+{
+	struct mem_gumbo *mem = ctx;
+	return fz_pool_alloc(mem->ctx, mem->pool, size);
+}
+
+static void dealloc_gumbo(void *ctx, void *ptr)
+{
+	/* nothing */
+}
+
+static void xml_from_gumbo(fz_context *ctx, struct parser *parser, GumboNode *node)
+{
+	unsigned int i;
+	const char *tag, *end, *sentinel;
+
+	switch (node->type)
+	{
+	case GUMBO_NODE_ELEMENT:
+		if (node->v.element.tag != GUMBO_TAG_UNKNOWN)
+		{
+			tag = gumbo_normalized_tagname(node->v.element.tag);
+			end = tag + strlen(tag);
+		}
+		else
+		{
+			tag = node->v.element.original_tag.data;
+			sentinel = tag + node->v.element.original_tag.length;
+			if (tag[0] == '<')
+				++tag;
+			for (end = tag; end < sentinel; ++end)
+				if (end[0] == '>' || end[0] == '/' || iswhite(end[0]))
+					break;
+		}
+		xml_emit_open_tag(ctx, parser, tag, end, 0);
+		for (i = 0; i < node->v.element.attributes.length; ++i)
+		{
+			GumboAttribute *att = node->v.element.attributes.data[i];
+			xml_emit_att_name(ctx, parser, att->name, att->name+strlen(att->name));
+			xml_emit_att_value(ctx, parser, att->value, att->value+strlen(att->value));
+		}
+		for (i = 0; i < node->v.element.children.length; ++i)
+		{
+			GumboNode *child = node->v.element.children.data[i];
+			xml_from_gumbo(ctx, parser, child);
+		}
+		xml_emit_close_tag(ctx, parser);
+		break;
+
+	case GUMBO_NODE_TEXT:
+	case GUMBO_NODE_CDATA:
+	case GUMBO_NODE_WHITESPACE:
+		xml_emit_text(ctx, parser, node->v.text.text, node->v.text.text+strlen(node->v.text.text));
+		break;
+
+	case GUMBO_NODE_DOCUMENT:
+	case GUMBO_NODE_COMMENT:
+	case GUMBO_NODE_TEMPLATE:
+		break;
+	}
+}
+
+fz_xml_doc *
+fz_parse_xml_from_html5(fz_context *ctx, fz_buffer *buf)
+{
+	struct parser parser;
+	fz_xml_doc *xml = NULL;
+	fz_xml root, *node;
+	char *p = NULL;
+	int dofree = 0;
+	unsigned char *s;
+	size_t n;
+	GumboOutput *soup = NULL;
+	GumboOptions opts;
+	struct mem_gumbo mem;
+
+	fz_var(mem.pool);
+	fz_var(soup);
+	fz_var(dofree);
+	fz_var(p);
+
+	/* ensure we are zero-terminated */
+	fz_terminate_buffer(ctx, buf);
+	n = fz_buffer_storage(ctx, buf, &s);
+
+	mem.ctx = ctx;
+	mem.pool = NULL;
+
+	memset(&root, 0, sizeof(root));
+	parser.pool = fz_new_pool(ctx);
+	parser.head = &root;
+	parser.preserve_white = 1;
+	parser.depth = 0;
+#ifdef FZ_XML_SEQ
+	parser.seq = 0;
+#endif
+
+	fz_try(ctx)
+	{
+		p = convert_to_utf8(ctx, s, n, &dofree);
+
+		mem.pool = fz_new_pool(ctx);
+		memset(&opts, 0, sizeof opts);
+		opts.allocator = alloc_gumbo;
+		opts.deallocator = dealloc_gumbo;
+		opts.userdata = &mem;
+		opts.tab_stop = 8;
+		opts.stop_on_first_error = 0;
+		opts.max_errors = -1;
+		opts.fragment_context = GUMBO_TAG_LAST;
+		opts.fragment_namespace = GUMBO_NAMESPACE_HTML;
+
+		soup = gumbo_parse_with_options(&opts, (const char *)p, strlen(p));
+
+		xml_from_gumbo(ctx, &parser, soup->root);
+
+		for (node = parser.head; node; node = node->up)
+			node->next = NULL;
+		for (node = root.down; node; node = node->next)
+			node->up = NULL;
+
+		xml = fz_pool_alloc(ctx, parser.pool, sizeof *xml);
+		xml->pool = parser.pool;
+		xml->root = root.down;
+	}
+	fz_always(ctx)
+	{
+		if (soup)
+			gumbo_destroy_output(&opts, soup);
+		fz_drop_pool(ctx, mem.pool);
+		if (dofree)
+			fz_free(ctx, p);
+	}
+	fz_catch(ctx)
+	{
+		fz_drop_pool(ctx, parser.pool);
+		fz_rethrow(ctx);
+	}
+
+	return xml;
 }

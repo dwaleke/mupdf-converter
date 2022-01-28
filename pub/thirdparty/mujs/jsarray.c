@@ -2,40 +2,40 @@
 #include "jsvalue.h"
 #include "jsbuiltin.h"
 
-unsigned int js_getlength(js_State *J, int idx)
+int js_getlength(js_State *J, int idx)
 {
-	unsigned int len;
+	int len;
 	js_getproperty(J, idx, "length");
-	len = js_touint32(J, -1);
+	len = js_tointeger(J, -1);
 	js_pop(J, 1);
 	return len;
 }
 
-void js_setlength(js_State *J, int idx, unsigned int len)
+void js_setlength(js_State *J, int idx, int len)
 {
 	js_pushnumber(J, len);
-	js_setproperty(J, idx < 0 ? idx - 1: idx, "length");
+	js_setproperty(J, idx < 0 ? idx - 1 : idx, "length");
 }
 
-int js_hasindex(js_State *J, int idx, unsigned int i)
+int js_hasindex(js_State *J, int idx, int i)
 {
 	char buf[32];
 	return js_hasproperty(J, idx, js_itoa(buf, i));
 }
 
-void js_getindex(js_State *J, int idx, unsigned int i)
+void js_getindex(js_State *J, int idx, int i)
 {
 	char buf[32];
 	js_getproperty(J, idx, js_itoa(buf, i));
 }
 
-void js_setindex(js_State *J, int idx, unsigned int i)
+void js_setindex(js_State *J, int idx, int i)
 {
 	char buf[32];
 	js_setproperty(J, idx, js_itoa(buf, i));
 }
 
-void js_delindex(js_State *J, int idx, unsigned int i)
+void js_delindex(js_State *J, int idx, int i)
 {
 	char buf[32];
 	js_delproperty(J, idx, js_itoa(buf, i));
@@ -43,7 +43,7 @@ void js_delindex(js_State *J, int idx, unsigned int i)
 
 static void jsB_new_Array(js_State *J)
 {
-	unsigned int i, top = js_gettop(J);
+	int i, top = js_gettop(J);
 
 	js_newarray(J);
 
@@ -65,8 +65,8 @@ static void jsB_new_Array(js_State *J)
 
 static void Ap_concat(js_State *J)
 {
-	unsigned int i, top = js_gettop(J);
-	unsigned int n, k, len;
+	int i, top = js_gettop(J);
+	int n, k, len;
 
 	js_newarray(J);
 	n = 0;
@@ -90,8 +90,8 @@ static void Ap_join(js_State *J)
 	char * volatile out = NULL;
 	const char *sep;
 	const char *r;
-	unsigned int seplen;
-	unsigned int k, n, len;
+	int seplen;
+	int k, n, len;
 
 	len = js_getlength(J, 0);
 
@@ -103,7 +103,7 @@ static void Ap_join(js_State *J)
 		seplen = 1;
 	}
 
-	if (len == 0) {
+	if (len <= 0) {
 		js_pushliteral(J, "");
 		return;
 	}
@@ -127,7 +127,7 @@ static void Ap_join(js_State *J)
 			strcpy(out, r);
 		} else {
 			n += seplen;
-			out = realloc(out, n);
+			out = js_realloc(J, out, n);
 			strcat(out, sep);
 			strcat(out, r);
 		}
@@ -142,7 +142,7 @@ static void Ap_join(js_State *J)
 
 static void Ap_pop(js_State *J)
 {
-	unsigned int n;
+	int n;
 
 	n = js_getlength(J, 0);
 
@@ -158,8 +158,8 @@ static void Ap_pop(js_State *J)
 
 static void Ap_push(js_State *J)
 {
-	unsigned int i, top = js_gettop(J);
-	unsigned int n;
+	int i, top = js_gettop(J);
+	int n;
 
 	n = js_getlength(J, 0);
 
@@ -175,14 +175,14 @@ static void Ap_push(js_State *J)
 
 static void Ap_reverse(js_State *J)
 {
-	unsigned int len, middle, lower;
+	int len, middle, lower;
 
 	len = js_getlength(J, 0);
 	middle = len / 2;
 	lower = 0;
 
 	while (lower != middle) {
-		unsigned int upper = len - lower - 1;
+		int upper = len - lower - 1;
 		int haslower = js_hasindex(J, 0, lower);
 		int hasupper = js_hasindex(J, 0, upper);
 		if (haslower && hasupper) {
@@ -203,7 +203,7 @@ static void Ap_reverse(js_State *J)
 
 static void Ap_shift(js_State *J)
 {
-	unsigned int k, len;
+	int k, len;
 
 	len = js_getlength(J, 0);
 
@@ -228,7 +228,7 @@ static void Ap_shift(js_State *J)
 
 static void Ap_slice(js_State *J)
 {
-	unsigned int len, s, e, n;
+	int len, s, e, n;
 	double sv, ev;
 
 	js_newarray(J);
@@ -248,75 +248,105 @@ static void Ap_slice(js_State *J)
 			js_setindex(J, -2, n);
 }
 
-static int compare(js_State *J, unsigned int x, unsigned int y, int *hasx, int *hasy, int hasfn)
+struct sortslot {
+	js_Value v;
+	js_State *J;
+};
+
+static int sortcmp(const void *avoid, const void *bvoid)
 {
+	const struct sortslot *aslot = avoid, *bslot = bvoid;
+	const js_Value *a = &aslot->v, *b = &bslot->v;
+	js_State *J = aslot->J;
 	const char *sx, *sy;
+	double v;
 	int c;
 
-	*hasx = js_hasindex(J, 0, x);
-	*hasy = js_hasindex(J, 0, y);
+	int unx = (a->type == JS_TUNDEFINED);
+	int uny = (b->type == JS_TUNDEFINED);
+	if (unx) return !uny;
+	if (uny) return -1;
 
-	if (*hasx && *hasy) {
-		int unx = js_isundefined(J, -2);
-		int uny = js_isundefined(J, -1);
-		if (unx && uny) return 0;
-		if (unx) return 1;
-		if (uny) return -1;
-
-		if (hasfn) {
-			js_copy(J, 1); /* copy function */
-			js_pushundefinedthis(J); /* set this object */
-			js_copy(J, -4); /* copy x */
-			js_copy(J, -4); /* copy y */
-			js_call(J, 2);
-			c = js_tonumber(J, -1);
-			js_pop(J, 1);
-			return c;
-		}
-
+	if (js_iscallable(J, 1)) {
+		js_copy(J, 1); /* copy function */
+		js_pushundefined(J);
+		js_pushvalue(J, *a);
+		js_pushvalue(J, *b);
+		js_call(J, 2);
+		v = js_tonumber(J, -1);
+		c = (v == 0) ? 0 : (v < 0) ? -1 : 1;
+		js_pop(J, 1);
+	} else {
+		js_pushvalue(J, *a);
+		js_pushvalue(J, *b);
 		sx = js_tostring(J, -2);
 		sy = js_tostring(J, -1);
-		return strcmp(sx, sy);
+		c = strcmp(sx, sy);
+		js_pop(J, 2);
 	}
-
-	if (*hasx) return -1;
-	if (*hasy) return 1;
-	return 0;
+	return c;
 }
 
 static void Ap_sort(js_State *J)
 {
-	unsigned int len, i, k;
-	int hasx, hasy, hasfn;
+	struct sortslot *array = NULL;
+	int i, n, len;
 
 	len = js_getlength(J, 0);
+	if (len <= 0) {
+		js_copy(J, 0);
+		return;
+	}
 
-	hasfn = js_iscallable(J, 1);
+	if (len >= INT_MAX / (int)sizeof(*array))
+		js_rangeerror(J, "array is too large to sort");
 
-	for (i = 1; i < len; ++i) {
-		k = i;
-		while (k > 0 && compare(J, k - 1, k, &hasx, &hasy, hasfn) > 0) {
-			if (hasx && hasy) {
-				js_setindex(J, 0, k - 1);
-				js_setindex(J, 0, k);
-			} else if (hasx) {
-				js_delindex(J, 0, k - 1);
-				js_setindex(J, 0, k);
-			} else if (hasy) {
-				js_setindex(J, 0, k - 1);
-				js_delindex(J, 0, k);
-			}
-			--k;
+	array = js_malloc(J, len * sizeof *array);
+
+	/* Holding objects where the GC cannot see them is illegal, but if we
+	 * don't allow the GC to run we can use qsort() on a temporary array of
+	 * js_Values for fast sorting.
+	 */
+	++J->gcpause;
+
+	if (js_try(J)) {
+		--J->gcpause;
+		js_free(J, array);
+		js_throw(J);
+	}
+
+	n = 0;
+	for (i = 0; i < len; ++i) {
+		if (js_hasindex(J, 0, i)) {
+			array[n].v = *js_tovalue(J, -1);
+			array[n].J = J;
+			js_pop(J, 1);
+			++n;
 		}
 	}
+
+	qsort(array, n, sizeof *array, sortcmp);
+
+	for (i = 0; i < n; ++i) {
+		js_pushvalue(J, array[i].v);
+		js_setindex(J, 0, i);
+	}
+	for (i = n; i < len; ++i) {
+		js_delindex(J, 0, i);
+	}
+
+	--J->gcpause;
+
+	js_endtry(J);
+	js_free(J, array);
 
 	js_copy(J, 0);
 }
 
 static void Ap_splice(js_State *J)
 {
-	unsigned int top = js_gettop(J);
-	unsigned int len, start, del, add, k;
+	int top = js_gettop(J);
+	int len, start, del, add, k;
 	double f;
 
 	js_newarray(J);
@@ -367,8 +397,8 @@ static void Ap_splice(js_State *J)
 
 static void Ap_unshift(js_State *J)
 {
-	unsigned int i, top = js_gettop(J);
-	unsigned int k, len;
+	int i, top = js_gettop(J);
+	int k, len;
 
 	len = js_getlength(J, 0);
 
@@ -393,9 +423,20 @@ static void Ap_unshift(js_State *J)
 
 static void Ap_toString(js_State *J)
 {
-	unsigned int top = js_gettop(J);
-	js_pop(J, top - 1);
-	Ap_join(J);
+	if (!js_iscoercible(J, 0))
+		js_typeerror(J, "'this' is not an object");
+	js_getproperty(J, 0, "join");
+	if (!js_iscallable(J, -1)) {
+		js_pop(J, 1);
+		// TODO: call Object.prototype.toString implementation directly
+		js_getglobal(J, "Object");
+		js_getproperty(J, -1, "prototype");
+		js_rot2pop1(J);
+		js_getproperty(J, -1, "toString");
+		js_rot2pop1(J);
+	}
+	js_copy(J, 0);
+	js_call(J, 0);
 }
 
 static void Ap_indexOf(js_State *J)
@@ -686,33 +727,33 @@ void jsB_initarray(js_State *J)
 {
 	js_pushobject(J, J->Array_prototype);
 	{
-		jsB_propf(J, "toString", Ap_toString, 0);
-		jsB_propf(J, "concat", Ap_concat, 1);
-		jsB_propf(J, "join", Ap_join, 1);
-		jsB_propf(J, "pop", Ap_pop, 0);
-		jsB_propf(J, "push", Ap_push, 1);
-		jsB_propf(J, "reverse", Ap_reverse, 0);
-		jsB_propf(J, "shift", Ap_shift, 0);
-		jsB_propf(J, "slice", Ap_slice, 2);
-		jsB_propf(J, "sort", Ap_sort, 1);
-		jsB_propf(J, "splice", Ap_splice, 2);
-		jsB_propf(J, "unshift", Ap_unshift, 1);
+		jsB_propf(J, "Array.prototype.toString", Ap_toString, 0);
+		jsB_propf(J, "Array.prototype.concat", Ap_concat, 0); /* 1 */
+		jsB_propf(J, "Array.prototype.join", Ap_join, 1);
+		jsB_propf(J, "Array.prototype.pop", Ap_pop, 0);
+		jsB_propf(J, "Array.prototype.push", Ap_push, 0); /* 1 */
+		jsB_propf(J, "Array.prototype.reverse", Ap_reverse, 0);
+		jsB_propf(J, "Array.prototype.shift", Ap_shift, 0);
+		jsB_propf(J, "Array.prototype.slice", Ap_slice, 2);
+		jsB_propf(J, "Array.prototype.sort", Ap_sort, 1);
+		jsB_propf(J, "Array.prototype.splice", Ap_splice, 0); /* 2 */
+		jsB_propf(J, "Array.prototype.unshift", Ap_unshift, 0); /* 1 */
 
 		/* ES5 */
-		jsB_propf(J, "indexOf", Ap_indexOf, 1);
-		jsB_propf(J, "lastIndexOf", Ap_lastIndexOf, 1);
-		jsB_propf(J, "every", Ap_every, 1);
-		jsB_propf(J, "some", Ap_some, 1);
-		jsB_propf(J, "forEach", Ap_forEach, 1);
-		jsB_propf(J, "map", Ap_map, 1);
-		jsB_propf(J, "filter", Ap_filter, 1);
-		jsB_propf(J, "reduce", Ap_reduce, 1);
-		jsB_propf(J, "reduceRight", Ap_reduceRight, 1);
+		jsB_propf(J, "Array.prototype.indexOf", Ap_indexOf, 1);
+		jsB_propf(J, "Array.prototype.lastIndexOf", Ap_lastIndexOf, 1);
+		jsB_propf(J, "Array.prototype.every", Ap_every, 1);
+		jsB_propf(J, "Array.prototype.some", Ap_some, 1);
+		jsB_propf(J, "Array.prototype.forEach", Ap_forEach, 1);
+		jsB_propf(J, "Array.prototype.map", Ap_map, 1);
+		jsB_propf(J, "Array.prototype.filter", Ap_filter, 1);
+		jsB_propf(J, "Array.prototype.reduce", Ap_reduce, 1);
+		jsB_propf(J, "Array.prototype.reduceRight", Ap_reduceRight, 1);
 	}
-	js_newcconstructor(J, jsB_new_Array, jsB_new_Array, "Array", 1);
+	js_newcconstructor(J, jsB_new_Array, jsB_new_Array, "Array", 0); /* 1 */
 	{
 		/* ES5 */
-		jsB_propf(J, "isArray", A_isArray, 1);
+		jsB_propf(J, "Array.isArray", A_isArray, 1);
 	}
 	js_defglobal(J, "Array", JS_DONTENUM);
 }

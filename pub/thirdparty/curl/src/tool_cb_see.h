@@ -11,7 +11,7 @@
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at http://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.haxx.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -43,4 +43,3 @@ int tool_ftruncate64(int fd, curl_off_t where);
 int tool_seek_cb(void *userdata, curl_off_t offset, int whence);
 
 #endif /* HEADER_CURL_TOOL_CB_SEE_H */
-

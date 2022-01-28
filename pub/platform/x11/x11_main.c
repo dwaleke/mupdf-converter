@@ -1,3 +1,25 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #include "pdfapp.h"
 
 #include <X11/Xlib.h>
@@ -6,6 +28,10 @@
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
 #include <X11/XF86keysym.h>
+
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include <sys/select.h>
 #include <sys/time.h>
@@ -61,8 +87,8 @@ extern void ximage_blit(Drawable d, GC gc, int dstx, int dsty,
 	unsigned char *srcdata,
 	int srcx, int srcy, int srcw, int srch, int srcstride);
 
-void windrawstringxor(pdfapp_t *app, int x, int y, char *s);
-void cleanup(pdfapp_t *app);
+static void windrawstringxor(pdfapp_t *app, int x, int y, char *s);
+static void cleanup(pdfapp_t *app);
 
 static Display *xdpy;
 static Atom XA_CLIPBOARD;
@@ -88,7 +114,6 @@ static int transition_dirty = 0;
 static int dirtysearch = 0;
 static char *password = "";
 static XColor xbgcolor;
-static XColor xshcolor;
 static int reqw = 0;
 static int reqh = 0;
 static char copylatin1[1024 * 16] = "";
@@ -167,7 +192,7 @@ void winprint(pdfapp_t *app)
 	fprintf(stderr, "The MuPDF library supports printing, but this application currently does not\n");
 }
 
-char *winpassword(pdfapp_t *app, char *filename)
+char *winpassword(pdfapp_t *app, char *fname)
 {
 	char *r = password;
 	password = NULL;
@@ -176,17 +201,11 @@ char *winpassword(pdfapp_t *app, char *filename)
 
 char *wintextinput(pdfapp_t *app, char *inittext, int retry)
 {
-	static char buf[256];
-
-	if (retry)
-		return NULL;
-
-	printf("> [%s] ", inittext);
-	fgets(buf, sizeof buf, stdin);
-	return buf;
+	/* We don't support text input on the x11 viewer */
+	return NULL;
 }
 
-int winchoiceinput(pdfapp_t *app, int nopts, char *opts[], int *nvals, char *vals[])
+int winchoiceinput(pdfapp_t *app, int nopts, const char *opts[], int *nvals, const char *vals[])
 {
 	/* FIXME: temporary dummy implementation */
 	return 0;
@@ -200,6 +219,11 @@ static void winopen(void)
 {
 	XWMHints *wmhints;
 	XClassHint *classhint;
+
+#ifdef HAVE_CURL
+	if (!XInitThreads())
+		fz_throw(gapp.ctx, FZ_ERROR_GENERIC, "cannot initialize X11 for multi-threading");
+#endif
 
 	xdpy = XOpenDisplay(NULL);
 	if (!xdpy)
@@ -228,12 +252,7 @@ static void winopen(void)
 	xbgcolor.green = 0x7000;
 	xbgcolor.blue = 0x7000;
 
-	xshcolor.red = 0x4000;
-	xshcolor.green = 0x4000;
-	xshcolor.blue = 0x4000;
-
 	XAllocColor(xdpy, DefaultColormap(xdpy, xscr), &xbgcolor);
-	XAllocColor(xdpy, DefaultColormap(xdpy, xscr), &xshcolor);
 
 	xwin = XCreateWindow(xdpy, DefaultRootWindow(xdpy),
 		10, 10, 200, 100, 0,
@@ -312,23 +331,49 @@ int wingetsavepath(pdfapp_t *app, char *buf, int len)
 	return 0;
 }
 
-void winreplacefile(char *source, char *target)
+void winreplacefile(pdfapp_t *app, char *source, char *target)
 {
-	rename(source, target);
+	if (rename(source, target) == -1)
+		pdfapp_warn(app, "unable to rename file");
 }
 
-void wincopyfile(char *source, char *target)
+void wincopyfile(pdfapp_t *app, char *source, char *target)
 {
-	char *buf = malloc(strlen(source)+strlen(target)+5);
-	if (buf)
+	FILE *in, *out;
+	char buf[32 << 10];
+	size_t n;
+
+	in = fopen(source, "rb");
+	if (!in)
 	{
-		sprintf(buf, "cp %s %s", source, target);
-		system(buf);
-		free(buf);
+		pdfapp_error(app, "cannot open source file for copying");
+		return;
 	}
+	out = fopen(target, "wb");
+	if (!out)
+	{
+		pdfapp_error(app, "cannot open target file for copying");
+		fclose(in);
+		return;
+	}
+
+	for (;;)
+	{
+		n = fread(buf, 1, sizeof buf, in);
+		fwrite(buf, 1, n, out);
+		if (n < sizeof buf)
+		{
+			if (ferror(in))
+				pdfapp_error(app, "cannot read data from source file");
+			break;
+		}
+	}
+
+	fclose(out);
+	fclose(in);
 }
 
-void cleanup(pdfapp_t *app)
+static void cleanup(pdfapp_t *app)
 {
 	fz_context *ctx = app->ctx;
 
@@ -350,10 +395,10 @@ void cleanup(pdfapp_t *app)
 	fz_drop_context(ctx);
 }
 
-static int winresolution()
+static int winresolution(void)
 {
-	return DisplayWidth(xdpy, xscr) * 25.4 /
-		DisplayWidthMM(xdpy, xscr) + 0.5;
+	return DisplayWidth(xdpy, xscr) * 25.4f /
+		DisplayWidthMM(xdpy, xscr) + 0.5f;
 }
 
 void wincursor(pdfapp_t *app, int curs)
@@ -388,10 +433,16 @@ void winhelp(pdfapp_t *app)
 
 void winresize(pdfapp_t *app, int w, int h)
 {
-	int image_w = fz_pixmap_width(gapp.ctx, gapp.image);
-	int image_h = fz_pixmap_height(gapp.ctx, gapp.image);
+	int image_w = gapp.layout_w;
+	int image_h = gapp.layout_h;
 	XWindowChanges values;
 	int mask, width, height;
+
+	if (gapp.image)
+	{
+		image_w = fz_pixmap_width(gapp.ctx, gapp.image);
+		image_h = fz_pixmap_height(gapp.ctx, gapp.image);
+	}
 
 	mask = CWWidth | CWHeight;
 	values.width = w;
@@ -487,72 +538,79 @@ static void winblitstatusbar(pdfapp_t *app)
 
 static void winblit(pdfapp_t *app)
 {
-	int image_w = fz_pixmap_width(gapp.ctx, gapp.image);
-	int image_h = fz_pixmap_height(gapp.ctx, gapp.image);
-	int image_n = fz_pixmap_components(gapp.ctx, gapp.image);
-	unsigned char *image_samples = fz_pixmap_samples(gapp.ctx, gapp.image);
-	int x0 = gapp.panx;
-	int y0 = gapp.pany;
-	int x1 = gapp.panx + image_w;
-	int y1 = gapp.pany + image_h;
-
-	XSetForeground(xdpy, xgc, xbgcolor.pixel);
-	fillrect(0, 0, x0, gapp.winh);
-	fillrect(x1, 0, gapp.winw - x1, gapp.winh);
-	fillrect(0, 0, gapp.winw, y0);
-	fillrect(0, y1, gapp.winw, gapp.winh - y1);
-
-	XSetForeground(xdpy, xgc, xshcolor.pixel);
-	fillrect(x0+2, y1, image_w, 2);
-	fillrect(x1, y0+2, 2, image_h);
-
-	if (gapp.iscopying || justcopied)
+	if (gapp.image)
 	{
-		pdfapp_invert(&gapp, &gapp.selr);
-		justcopied = 1;
-	}
+		int image_w = fz_pixmap_width(gapp.ctx, gapp.image);
+		int image_h = fz_pixmap_height(gapp.ctx, gapp.image);
+		int image_n = fz_pixmap_components(gapp.ctx, gapp.image);
+		unsigned char *image_samples = fz_pixmap_samples(gapp.ctx, gapp.image);
+		int x0 = gapp.panx;
+		int y0 = gapp.pany;
+		int x1 = gapp.panx + image_w;
+		int y1 = gapp.pany + image_h;
 
-	pdfapp_inverthit(&gapp);
+		if (app->invert)
+			XSetForeground(xdpy, xgc, BlackPixel(xdpy, DefaultScreen(xdpy)));
+		else
+			XSetForeground(xdpy, xgc, xbgcolor.pixel);
+		fillrect(0, 0, x0, gapp.winh);
+		fillrect(x1, 0, gapp.winw - x1, gapp.winh);
+		fillrect(0, 0, gapp.winw, y0);
+		fillrect(0, y1, gapp.winw, gapp.winh - y1);
 
-	if (image_n == 4)
-		ximage_blit(xwin, xgc,
-			x0, y0,
-			image_samples,
-			0, 0,
-			image_w,
-			image_h,
-			image_w * image_n);
-	else if (image_n == 2)
-	{
-		int i = image_w*image_h;
-		unsigned char *color = malloc(i*4);
-		if (color)
+		if (gapp.iscopying || justcopied)
 		{
-			unsigned char *s = image_samples;
-			unsigned char *d = color;
-			for (; i > 0 ; i--)
-			{
-				d[2] = d[1] = d[0] = *s++;
-				d[3] = *s++;
-				d += 4;
-			}
+			pdfapp_invert(&gapp, gapp.selr);
+			justcopied = 1;
+		}
+
+		pdfapp_inverthit(&gapp);
+
+		if (image_n == 4)
 			ximage_blit(xwin, xgc,
 				x0, y0,
-				color,
+				image_samples,
 				0, 0,
 				image_w,
 				image_h,
-				image_w * 4);
-			free(color);
+				image_w * image_n);
+		else if (image_n == 2)
+		{
+			int i = image_w*image_h;
+			unsigned char *color = malloc(i*4);
+			if (color)
+			{
+				unsigned char *s = image_samples;
+				unsigned char *d = color;
+				for (; i > 0 ; i--)
+				{
+					d[2] = d[1] = d[0] = *s++;
+					d[3] = *s++;
+					d += 4;
+				}
+				ximage_blit(xwin, xgc,
+					x0, y0,
+					color,
+					0, 0,
+					image_w,
+					image_h,
+					image_w * 4);
+				free(color);
+			}
+		}
+
+		pdfapp_inverthit(&gapp);
+
+		if (gapp.iscopying || justcopied)
+		{
+			pdfapp_invert(&gapp, gapp.selr);
+			justcopied = 1;
 		}
 	}
-
-	pdfapp_inverthit(&gapp);
-
-	if (gapp.iscopying || justcopied)
+	else
 	{
-		pdfapp_invert(&gapp, &gapp.selr);
-		justcopied = 1;
+		XSetForeground(xdpy, xgc, xbgcolor.pixel);
+		fillrect(0, 0, gapp.winw, gapp.winh);
 	}
 
 	winblitstatusbar(app);
@@ -582,7 +640,7 @@ void winadvancetimer(pdfapp_t *app, float duration)
 	advance_scheduled = 1;
 }
 
-void windrawstringxor(pdfapp_t *app, int x, int y, char *s)
+static void windrawstringxor(pdfapp_t *app, int x, int y, char *s)
 {
 	int prevfunction;
 	XGCValues xgcv;
@@ -608,7 +666,7 @@ void windrawstring(pdfapp_t *app, int x, int y, char *s)
 	XDrawString(xdpy, xwin, xgc, x, y, s, strlen(s));
 }
 
-void docopy(pdfapp_t *app, Atom copy_target)
+static void docopy(pdfapp_t *app, Atom copy_target)
 {
 	unsigned short copyucs2[16 * 1024];
 	char *latin1 = copylatin1;
@@ -643,7 +701,7 @@ void windocopy(pdfapp_t *app)
 	docopy(app, XA_PRIMARY);
 }
 
-void onselreq(Window requestor, Atom selection, Atom target, Atom property, Time time)
+static void onselreq(Window requestor, Atom selection, Atom target, Atom property, Time time)
 {
 	XEvent nevt;
 
@@ -738,9 +796,19 @@ void winopenuri(pdfapp_t *app, char *buf)
 			execlp(browser, browser, buf, (char*)0);
 			fprintf(stderr, "cannot exec '%s'\n", browser);
 		}
-		exit(0);
+		_exit(0);
 	}
 	waitpid(pid, NULL, 0);
+}
+
+int winquery(pdfapp_t *app, const char *query)
+{
+	return QUERY_NO;
+}
+
+int wingetcertpath(pdfapp_t *app, char *buf, int len)
+{
+	return 0;
 }
 
 static void onkey(int c, int modifiers)
@@ -756,11 +824,11 @@ static void onkey(int c, int modifiers)
 	if (!gapp.issearching && c == 'P')
 	{
 		struct timeval now;
-		struct timeval tmo;
-		tmo.tv_sec = 2;
-		tmo.tv_usec = 0;
+		struct timeval t;
+		t.tv_sec = 2;
+		t.tv_usec = 0;
 		gettimeofday(&now, NULL);
-		timeradd(&now, &tmo, &tmo_at);
+		timeradd(&now, &t, &tmo_at);
 		showingpage = 1;
 		winrepaint(&gapp);
 		return;
@@ -795,17 +863,19 @@ static void signal_handler(int signal)
 		reloading = 1;
 }
 
-static void usage(void)
+static void usage(const char *argv0)
 {
-	fprintf(stderr, "usage: mupdf [options] file.pdf [page]\n");
+	fprintf(stderr, "usage: %s [options] file.pdf [page]\n", argv0);
 	fprintf(stderr, "\t-p -\tpassword\n");
 	fprintf(stderr, "\t-r -\tresolution\n");
 	fprintf(stderr, "\t-A -\tset anti-aliasing quality in bits (0=off, 8=best)\n");
 	fprintf(stderr, "\t-C -\tRRGGBB (tint color in hexadecimal syntax)\n");
 	fprintf(stderr, "\t-W -\tpage width for EPUB layout\n");
 	fprintf(stderr, "\t-H -\tpage height for EPUB layout\n");
+	fprintf(stderr, "\t-I -\tinvert colors\n");
 	fprintf(stderr, "\t-S -\tfont size for EPUB layout\n");
 	fprintf(stderr, "\t-U -\tuser style sheet for EPUB layout\n");
+	fprintf(stderr, "\t-X\tdisable document styles for EPUB layout\n");
 	exit(1);
 }
 
@@ -826,6 +896,7 @@ int main(int argc, char **argv)
 	struct timeval now;
 	struct timeval *timeout;
 	struct timeval tmo_advance_delay;
+	int kbps = 0;
 
 	ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
 	if (!ctx)
@@ -836,30 +907,31 @@ int main(int argc, char **argv)
 
 	pdfapp_init(ctx, &gapp);
 
-	while ((c = fz_getopt(argc, argv, "p:r:A:C:W:H:S:U:")) != -1)
+	while ((c = fz_getopt(argc, argv, "Ip:r:A:C:W:H:S:U:Xb:")) != -1)
 	{
 		switch (c)
 		{
 		case 'C':
 			c = strtol(fz_optarg, NULL, 16);
 			gapp.tint = 1;
-			gapp.tint_r = (c >> 16) & 255;
-			gapp.tint_g = (c >> 8) & 255;
-			gapp.tint_b = (c) & 255;
+			gapp.tint_white = c;
 			break;
 		case 'p': password = fz_optarg; break;
 		case 'r': resolution = atoi(fz_optarg); break;
+		case 'I': gapp.invert = 1; break;
 		case 'A': fz_set_aa_level(ctx, atoi(fz_optarg)); break;
 		case 'W': gapp.layout_w = fz_atof(fz_optarg); break;
 		case 'H': gapp.layout_h = fz_atof(fz_optarg); break;
 		case 'S': gapp.layout_em = fz_atof(fz_optarg); break;
 		case 'U': gapp.layout_css = fz_optarg; break;
-		default: usage();
+		case 'X': gapp.layout_use_doc_css = 0; break;
+		case 'b': kbps = fz_atoi(fz_optarg); break;
+		default: usage(argv[0]);
 		}
 	}
 
 	if (argc - fz_optind == 0)
-		usage();
+		usage(argv[0]);
 
 	filename = argv[fz_optind++];
 
@@ -878,6 +950,7 @@ int main(int argc, char **argv)
 	gapp.transitions_enabled = 1;
 	gapp.scrw = DisplayWidth(xdpy, xscr);
 	gapp.scrh = DisplayHeight(xdpy, xscr);
+	gapp.default_resolution = resolution;
 	gapp.resolution = resolution;
 	gapp.pageno = pageno;
 
@@ -885,7 +958,10 @@ int main(int argc, char **argv)
 	tmo_at.tv_usec = 0;
 	timeout = NULL;
 
-	pdfapp_open(&gapp, filename, 0);
+	if (kbps)
+		pdfapp_open_progressive(&gapp, filename, 0, kbps);
+	else
+		pdfapp_open(&gapp, filename, 0);
 
 	FD_ZERO(&fds);
 
@@ -926,24 +1002,30 @@ int main(int argc, char **argv)
 						break;
 
 					case XK_Up:
+					case XK_KP_Up:
 						len = 1; buf[0] = 'k';
 						break;
 					case XK_Down:
+					case XK_KP_Down:
 						len = 1; buf[0] = 'j';
 						break;
 
 					case XK_Left:
-						len = 1; buf[0] = 'b';
+					case XK_KP_Left:
+						len = 1; buf[0] = 'h';
 						break;
 					case XK_Right:
-						len = 1; buf[0] = ' ';
+					case XK_KP_Right:
+						len = 1; buf[0] = 'l';
 						break;
 
 					case XK_Page_Up:
+					case XK_KP_Page_Up:
 					case XF86XK_Back:
 						len = 1; buf[0] = ',';
 						break;
 					case XK_Page_Down:
+					case XK_KP_Page_Down:
 					case XF86XK_Forward:
 						len = 1; buf[0] = '.';
 						break;
@@ -983,7 +1065,7 @@ int main(int argc, char **argv)
 			case ClientMessage:
 				if (xevt.xclient.message_type == WM_RELOAD_PAGE)
 					pdfapp_reloadpage(&gapp);
-				else if (xevt.xclient.format == 32 && xevt.xclient.data.l[0] == WM_DELETE_WINDOW)
+				else if (xevt.xclient.format == 32 && ((Atom) xevt.xclient.data.l[0]) == WM_DELETE_WINDOW)
 					closing = 1;
 				break;
 			}

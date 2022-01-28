@@ -1,3 +1,61 @@
+Version 0.19 (2020 September 10)
+
+* API change to use full 32 bit segment numbers, in accordance
+  to the JBIG2 specification.
+
+* Better handling of end of input data stream and and when
+  encountering errors in the arithmetic decoder stream. This
+  should improve many situations where jbig2dec appeared to
+  run forever.
+
+* Fix several bugs related to signedness or over-/underflow
+  checks that were not robust.
+
+* Bug fixes for issues reported by Coverity/OSS-fuzz.
+
+* Add option to limit memory usage to command line tool.
+
+* Update manpages, and command line tool usage.
+
+Version 0.18 (2020 February 11)
+
+* Performance enhancements related to decoding of MMR and generic
+  regions as well as composing images onto pages.
+
+* Bug fixes for a few issues reported by Coverity and OSS-Fuzz.
+
+Version 0.17 (2019 September 16)
+
+* Improved test suite by verifying input file contents and adding
+  all ubc test streams. Fixed bugs where previously missing ubc
+  test streams were decoded incorrectly.
+
+* Bug fixes for a few issues reported by Coverity.
+
+* Moved version number to jbig2.h, and adapted configure
+  correspondingly. Added pkg-config file to be installed
+  along side library.
+
+Version 0.16 (2019 April 04)
+
+* API change allowing for library users to get the custom allocator
+  so it may be freed if necessary. This is useful if the allocator
+  is extended with e.g. a custom pointer needed by the allocator
+  callbacks.
+
+Version 0.15 (2018 September 04)
+
+* Bug fix release, with many security related and stability fixes
+  as well as better tolerance/behaviour with out of spec files
+
+Version 0.14 (2017 October 04)
+
+* Bug fix release.
+
+Version 0.13 (2016 April 07)
+
+* Bug fix release.
+
 Version 0.12 (2014 October 1)
 
 * Bug fix release.
@@ -40,7 +98,7 @@ Version 0.7 (2004 December 8)
  * successfully decodes ubc test streams 042_21, 042_22 and 042_23
  * generic region template 3 handling with arbitrary AT locations
  * successfully decodes ubc test streams 042_6 and 042_7
- 
+
 Version 0.6 (2003 December 31)
 
  * minor portability fix for cygwin
@@ -55,7 +113,7 @@ Version 0.5 (2003 December 4)
 
 Version 0.4 (released 2003 August 1)
 
- * redid license header to simplify relabelling for commercial 
+ * redid license header to simplify relabelling for commercial
    distribution, borrowing from Ghostscript.
 
 Version 0.3 (released 2003 May 20)

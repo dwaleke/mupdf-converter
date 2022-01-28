@@ -29,7 +29,7 @@ http
  <name>
 HTTP Location: and 'redirect_url' check
  </name>
- <command>
+<command>
 http://%HOSTIP:%HTTPPORT/we/want/our/1029 -w '%{redirect_url}\n'
 </command>
 </client>
@@ -45,7 +45,7 @@ Host: %HOSTIP:%HTTPPORT
 Accept: */*
 
 </protocol>
-<stdout mode="text">
+<stdout>
 HTTP/1.1 301 This is a weirdo text message swsclose
 Location: data/10290002.txt?coolsite=yes
 Content-Length: 62

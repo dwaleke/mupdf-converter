@@ -1,36 +1,36 @@
-/***************************************************************************/
-/*                                                                         */
-/*  t42parse.c                                                             */
-/*                                                                         */
-/*    Type 42 font parser (body).                                          */
-/*                                                                         */
-/*  Copyright 2002-2015 by                                                 */
-/*  Roberto Alameda.                                                       */
-/*                                                                         */
-/*  This file is part of the FreeType project, and may only be used,       */
-/*  modified, and distributed under the terms of the FreeType project      */
-/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */
-/*  this file you indicate that you have read the license and              */
-/*  understand and accept it fully.                                        */
-/*                                                                         */
-/***************************************************************************/
+/****************************************************************************
+ *
+ * t42parse.c
+ *
+ *   Type 42 font parser (body).
+ *
+ * Copyright (C) 2002-2020 by
+ * Roberto Alameda.
+ *
+ * This file is part of the FreeType project, and may only be used,
+ * modified, and distributed under the terms of the FreeType project
+ * license, LICENSE.TXT.  By continuing to use, modify, or distribute
+ * this file you indicate that you have read the license and
+ * understand and accept it fully.
+ *
+ */
 
 
 #include "t42parse.h"
 #include "t42error.h"
-#include FT_INTERNAL_DEBUG_H
-#include FT_INTERNAL_STREAM_H
-#include FT_INTERNAL_POSTSCRIPT_AUX_H
+#include <freetype/internal/ftdebug.h>
+#include <freetype/internal/ftstream.h>
+#include <freetype/internal/psaux.h>
 
 
-  /*************************************************************************/
-  /*                                                                       */
-  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */
-  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */
-  /* messages during execution.                                            */
-  /*                                                                       */
+  /**************************************************************************
+   *
+   * The macro FT_COMPONENT is used in trace mode.  It is an implicit
+   * parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log
+   * messages during execution.
+   */
 #undef  FT_COMPONENT
-#define FT_COMPONENT  trace_t42
+#define FT_COMPONENT  t42
 
 
   static void
@@ -149,19 +149,19 @@
     parser->base_dict = NULL;
     parser->in_memory = 0;
 
-    /*******************************************************************/
-    /*                                                                 */
-    /* Here a short summary of what is going on:                       */
-    /*                                                                 */
-    /*   When creating a new Type 42 parser, we try to locate and load */
-    /*   the base dictionary, loading the whole font into memory.      */
-    /*                                                                 */
-    /*   When `loading' the base dictionary, we only set up pointers   */
-    /*   in the case of a memory-based stream.  Otherwise, we allocate */
-    /*   and load the base dictionary in it.                           */
-    /*                                                                 */
-    /*   parser->in_memory is set if we have a memory stream.          */
-    /*                                                                 */
+    /********************************************************************
+     *
+     * Here a short summary of what is going on:
+     *
+     *   When creating a new Type 42 parser, we try to locate and load
+     *   the base dictionary, loading the whole font into memory.
+     *
+     *   When `loading' the base dictionary, we only set up pointers
+     *   in the case of a memory-based stream.  Otherwise, we allocate
+     *   and load the base dictionary in it.
+     *
+     *   parser->in_memory is set if we have a memory stream.
+     */
 
     if ( FT_STREAM_SEEK( 0L ) ||
          FT_FRAME_ENTER( 17 ) )
@@ -226,7 +226,8 @@
     if ( !parser->in_memory )
       FT_FREE( parser->base_dict );
 
-    parser->root.funcs.done( &parser->root );
+    if ( parser->root.funcs.done )
+      parser->root.funcs.done( &parser->root );
   }
 
 
@@ -283,6 +284,13 @@
     matrix->yx = temp[1];
     matrix->xy = temp[2];
     matrix->yy = temp[3];
+
+    if ( !FT_Matrix_Check( matrix ) )
+    {
+      FT_ERROR(( "t42_parse_font_matrix: invalid font matrix\n" ));
+      parser->root.error = FT_THROW( Invalid_File_Format );
+      return;
+    }
 
     /* note that the offsets must be expressed in integer font units */
     offset->x = temp[4] >> 16;
@@ -366,12 +374,7 @@
 
       /* We need to `zero' out encoding_table.elements */
       for ( n = 0; n < count; n++ )
-      {
-        char*  notdef = (char *)".notdef";
-
-
-        (void)T1_Add_Table( char_table, n, notdef, 8 );
-      }
+        (void)T1_Add_Table( char_table, n, ".notdef", 8 );
 
       /* Now we need to read records of the form                */
       /*                                                        */
@@ -575,6 +578,9 @@
 
     while ( parser->root.cursor < limit )
     {
+      FT_ULong  size;
+
+
       cur = parser->root.cursor;
 
       if ( *cur == ']' )
@@ -585,6 +591,14 @@
 
       else if ( *cur == '<' )
       {
+        if ( string_buf && !allocated )
+        {
+          FT_ERROR(( "t42_parse_sfnts: "
+                     "can't handle mixed binary and hex strings\n" ));
+          error = FT_THROW( Invalid_File_Format );
+          goto Fail;
+        }
+
         T1_Skip_PS_Token( parser );
         if ( parser->root.error )
           goto Exit;
@@ -637,7 +651,7 @@
 
         string_buf = parser->root.cursor + 1;   /* one space after `RD' */
 
-        if ( (FT_ULong)( limit - parser->root.cursor ) < string_size )
+        if ( (FT_ULong)( limit - parser->root.cursor ) <= string_size )
         {
           FT_ERROR(( "t42_parse_sfnts: too much binary data\n" ));
           error = FT_THROW( Invalid_File_Format );
@@ -666,6 +680,11 @@
         goto Fail;
       }
 
+      /* The whole TTF is now loaded into `string_buf'.  We are */
+      /* checking its contents while copying it to `ttf_data'.  */
+
+      size = (FT_ULong)( limit - parser->root.cursor );
+
       for ( n = 0; n < string_size; n++ )
       {
         switch ( status )
@@ -683,7 +702,7 @@
             status         = BEFORE_TABLE_DIR;
             face->ttf_size = 12 + 16 * num_tables;
 
-            if ( (FT_Long)( limit - parser->root.cursor ) < face->ttf_size )
+            if ( (FT_Long)size < face->ttf_size )
             {
               FT_ERROR(( "t42_parse_sfnts: invalid data in sfnts array\n" ));
               error = FT_THROW( Invalid_File_Format );
@@ -714,6 +733,14 @@
 
 
               len = FT_PEEK_ULONG( p );
+              if ( len > size                               ||
+                   face->ttf_size > (FT_Long)( size - len ) )
+              {
+                FT_ERROR(( "t42_parse_sfnts:"
+                           " invalid data in sfnts array\n" ));
+                error = FT_THROW( Invalid_File_Format );
+                goto Fail;
+              }
 
               /* Pad to a 4-byte boundary length */
               face->ttf_size += (FT_Long)( ( len + 3 ) & ~3U );
@@ -721,7 +748,6 @@
 
             status = OTHER_TABLES;
 
-            /* there are no more than 256 tables, so no size check here */
             if ( FT_REALLOC( face->ttf_data, 12 + 16 * num_tables,
                              face->ttf_size + 1 ) )
               goto Fail;
@@ -795,6 +821,17 @@
         error = FT_THROW( Invalid_File_Format );
         goto Fail;
       }
+
+      /* we certainly need more than 4 bytes per glyph */
+      if ( loader->num_glyphs > ( limit - parser->root.cursor ) >> 2 )
+      {
+        FT_TRACE0(( "t42_parse_charstrings: adjusting number of glyphs"
+                    " (from %d to %ld)\n",
+                    loader->num_glyphs,
+                    ( limit - parser->root.cursor ) >> 2 ));
+        loader->num_glyphs = ( limit - parser->root.cursor ) >> 2;
+      }
+
     }
     else if ( *parser->root.cursor == '<' )
     {
@@ -873,8 +910,13 @@
 
     for (;;)
     {
-      /* The format is simple:                   */
-      /*   `/glyphname' + index [+ def]          */
+      /* We support two formats.                     */
+      /*                                             */
+      /*   `/glyphname' + index [+ `def']            */
+      /*   `(glyphname)' [+ `cvn'] + index [+ `def'] */
+      /*                                             */
+      /* The latter format gets created by the       */
+      /* LilyPond typesetting program.               */
 
       T1_Skip_Spaces( parser );
 
@@ -902,12 +944,13 @@
       if ( parser->root.error )
         return;
 
-      if ( *cur == '/' )
+      if ( *cur == '/' || *cur == '(' )
       {
         FT_UInt  len;
+        FT_Bool  have_literal = FT_BOOL( *cur == '(' );
 
 
-        if ( cur + 2 >= limit )
+        if ( cur + ( have_literal ? 3 : 2 ) >= limit )
         {
           FT_ERROR(( "t42_parse_charstrings: out of bounds\n" ));
           error = FT_THROW( Invalid_File_Format );
@@ -916,6 +959,8 @@
 
         cur++;                              /* skip `/' */
         len = (FT_UInt)( parser->root.cursor - cur );
+        if ( have_literal )
+          len--;
 
         error = T1_Add_Table( name_table, n, cur, len + 1 );
         if ( error )
@@ -934,6 +979,9 @@
         }
 
         T1_Skip_Spaces( parser );
+
+        if ( have_literal )
+          T1_Skip_PS_Token( parser );
 
         cur = parser->root.cursor;
 
@@ -969,8 +1017,7 @@
     }
 
     /* if /.notdef does not occupy index 0, do our magic. */
-    if ( ft_strcmp( (const char*)".notdef",
-                    (const char*)name_table->elements[0] ) )
+    if ( ft_strcmp( ".notdef", (const char*)name_table->elements[0] ) )
     {
       /* Swap glyph in index 0 with /.notdef glyph.  First, add index 0  */
       /* name and code entries to swap_table.  Then place notdef_index   */
@@ -1231,7 +1278,7 @@
   {
     FT_UNUSED( face );
 
-    FT_MEM_ZERO( loader, sizeof ( *loader ) );
+    FT_ZERO( loader );
     loader->num_glyphs = 0;
     loader->num_chars  = 0;
 

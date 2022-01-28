@@ -1,13 +1,38 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
+#include "mupdf/fitz.h"
 #include "mupdf/pdf.h"
+
+#include <string.h>
 
 /*
  * CMap parser
  */
 
 static int
-pdf_code_from_string(char *buf, int len)
+pdf_code_from_string(char *buf, size_t len)
 {
-	int a = 0;
+	unsigned int a = 0;
 	while (len--)
 		a = (a << 8) | *(unsigned char *)buf++;
 	return a;
@@ -39,6 +64,13 @@ pdf_parse_wmode(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_lexbuf *bu
 		fz_warn(ctx, "expected integer after WMode in cmap");
 }
 
+static int
+is_keyword(pdf_token tok, pdf_lexbuf *buf, const char *word)
+{
+	/* Ignore trailing garbage when matching keywords */
+	return (tok == PDF_TOK_KEYWORD && !strncmp(buf->scratch, word, strlen(word)));
+}
+
 static void
 pdf_parse_codespace_range(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_lexbuf *buf)
 {
@@ -49,7 +81,7 @@ pdf_parse_codespace_range(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_
 	{
 		tok = pdf_lex(ctx, file, buf);
 
-		if (tok == PDF_TOK_KEYWORD && !strcmp(buf->scratch, "endcodespacerange"))
+		if (is_keyword(tok, buf, "endcodespacerange"))
 			return;
 
 		else if (tok == PDF_TOK_STRING)
@@ -80,7 +112,7 @@ pdf_parse_cid_range(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_lexbuf
 	{
 		tok = pdf_lex(ctx, file, buf);
 
-		if (tok == PDF_TOK_KEYWORD && !strcmp(buf->scratch, "endcidrange"))
+		if (is_keyword(tok, buf, "endcidrange"))
 			return;
 
 		else if (tok != PDF_TOK_STRING)
@@ -114,7 +146,7 @@ pdf_parse_cid_char(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_lexbuf 
 	{
 		tok = pdf_lex(ctx, file, buf);
 
-		if (tok == PDF_TOK_KEYWORD && !strcmp(buf->scratch, "endcidchar"))
+		if (is_keyword(tok, buf, "endcidchar"))
 			return;
 
 		else if (tok != PDF_TOK_STRING)
@@ -137,7 +169,6 @@ pdf_parse_bf_range_array(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_l
 {
 	pdf_token tok;
 	int dst[256];
-	int i;
 
 	while (1)
 	{
@@ -152,7 +183,8 @@ pdf_parse_bf_range_array(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_l
 
 		if (buf->len / 2)
 		{
-			int len = fz_mini(buf->len / 2, nelem(dst));
+			size_t i;
+			size_t len = fz_minz(buf->len / 2, nelem(dst));
 			for (i = 0; i < len; i++)
 				dst[i] = pdf_code_from_string(&buf->scratch[i * 2], 2);
 
@@ -173,7 +205,7 @@ pdf_parse_bf_range(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_lexbuf 
 	{
 		tok = pdf_lex(ctx, file, buf);
 
-		if (tok == PDF_TOK_KEYWORD && !strcmp(buf->scratch, "endbfrange"))
+		if (is_keyword(tok, buf, "endbfrange"))
 			return;
 
 		else if (tok != PDF_TOK_STRING)
@@ -204,18 +236,18 @@ pdf_parse_bf_range(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_lexbuf 
 			else
 			{
 				int dststr[256];
-				int i;
+				size_t i;
 
 				if (buf->len / 2)
 				{
-					int len = fz_mini(buf->len / 2, nelem(dststr));
+					size_t len = fz_minz(buf->len / 2, nelem(dststr));
 					for (i = 0; i < len; i++)
 						dststr[i] = pdf_code_from_string(&buf->scratch[i * 2], 2);
 
 					while (lo <= hi)
 					{
-						dststr[i-1] ++;
 						pdf_map_one_to_many(ctx, cmap, lo, dststr, i);
+						dststr[i-1] ++;
 						lo ++;
 					}
 				}
@@ -240,13 +272,12 @@ pdf_parse_bf_char(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_lexbuf *
 	pdf_token tok;
 	int dst[256];
 	int src;
-	int i;
 
 	while (1)
 	{
 		tok = pdf_lex(ctx, file, buf);
 
-		if (tok == PDF_TOK_KEYWORD && !strcmp(buf->scratch, "endbfchar"))
+		if (is_keyword(tok, buf, "endbfchar"))
 			return;
 
 		else if (tok != PDF_TOK_STRING)
@@ -261,7 +292,8 @@ pdf_parse_bf_char(fz_context *ctx, pdf_cmap *cmap, fz_stream *file, pdf_lexbuf *
 
 		if (buf->len / 2)
 		{
-			int len = fz_mini(buf->len / 2, nelem(dst));
+			size_t i;
+			size_t len = fz_minz(buf->len / 2, nelem(dst));
 			for (i = 0; i < len; i++)
 				dst[i] = pdf_code_from_string(&buf->scratch[i * 2], 2);
 			pdf_map_one_to_many(ctx, cmap, src, dst, i);
@@ -303,25 +335,25 @@ pdf_load_cmap(fz_context *ctx, fz_stream *file)
 
 			else if (tok == PDF_TOK_KEYWORD)
 			{
-				if (!strcmp(buf.scratch, "endcmap"))
+				if (is_keyword(tok, &buf, "endcmap"))
 					break;
 
-				else if (!strcmp(buf.scratch, "usecmap"))
+				else if (is_keyword(tok, &buf, "usecmap"))
 					fz_strlcpy(cmap->usecmap_name, key, sizeof(cmap->usecmap_name));
 
-				else if (!strcmp(buf.scratch, "begincodespacerange"))
+				else if (is_keyword(tok, &buf, "begincodespacerange"))
 					pdf_parse_codespace_range(ctx, cmap, file, &buf);
 
-				else if (!strcmp(buf.scratch, "beginbfchar"))
+				else if (is_keyword(tok, &buf, "beginbfchar"))
 					pdf_parse_bf_char(ctx, cmap, file, &buf);
 
-				else if (!strcmp(buf.scratch, "begincidchar"))
+				else if (is_keyword(tok, &buf, "begincidchar"))
 					pdf_parse_cid_char(ctx, cmap, file, &buf);
 
-				else if (!strcmp(buf.scratch, "beginbfrange"))
+				else if (is_keyword(tok, &buf, "beginbfrange"))
 					pdf_parse_bf_range(ctx, cmap, file, &buf);
 
-				else if (!strcmp(buf.scratch, "begincidrange"))
+				else if (is_keyword(tok, &buf, "begincidrange"))
 					pdf_parse_cid_range(ctx, cmap, file, &buf);
 			}
 
@@ -337,7 +369,7 @@ pdf_load_cmap(fz_context *ctx, fz_stream *file)
 	fz_catch(ctx)
 	{
 		pdf_drop_cmap(ctx, cmap);
-		fz_rethrow_message(ctx, "syntaxerror in cmap");
+		fz_rethrow(ctx);
 	}
 
 	return cmap;

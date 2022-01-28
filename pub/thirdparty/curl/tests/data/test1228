@@ -3,7 +3,8 @@
 <keywords>
 HTTP
 HTTP GET
-cookies 
+HTTP proxy
+cookies
 cookie path
 </keywords>
 </info>

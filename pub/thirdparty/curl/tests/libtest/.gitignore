@@ -1,7 +1,7 @@
+chkdecimalpoint
 chkhostname
-lib5[0-9][0-9]
-lib15[0-9][0-9]
-lib19[0-9][0-9]
-lib2033
+lib[12][0-9][0-9][0-9]
+lib[56][0-9][0-9]
+lib1521.c
 libauthretry
 libntlmconnect

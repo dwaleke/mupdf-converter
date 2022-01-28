@@ -1,12 +1,10 @@
-This is a basic C# .NET 4.0 wrapper for part of the MuPDF library. This code allows you to get .NET 2.0 Bitmap images, WPF .NET 3.0 BitmapSource objects, and raw pixel data of Pdf pages. You can pass in page size parameters to get back custom image sizes.
-
-If you want a .NET 2.0 version of this library all you have to do is strip out the post-.NET 2.0 WPF stuff (should work - haven't tested it).
+This is a basic C# .NET 6.0 wrapper for part of the MuPDF library. This code allows you to get .NET Bitmap images, WPF BitmapSource objects, and raw pixel data of Pdf pages. You can pass in page size parameters to get back custom image sizes.
 
 Included is a sample of how to use this library. I included a MuPDFConverter class that will convert a Pdf document to a Tiff document with minimal input.
 
 This library has been modified to add a monochrome color space. The focus of the monochrome color space is to make the best readable tiff documents for faxing. Some detail (shading, etc) might be lost in the conversion to monochrome tiff images, but that is typically not a concern.
 
-The MuPDF code contained in this project is based off of the latest code checked in at http://git.ghostscript.com/?p=mupdf.git.
+The MuPDF code contained in this project is based off of the code checked in at http://git.ghostscript.com/?p=mupdf.git.
 
 The MuPDF library itself is wrapped in a C++ object. Why? Debugging P/Invoke code in C# is not fun. By keeping the core of the library in C++, changes to MuPDF library are abstracted and the P/Invoke code rarely ever needs to change (unless adding functionality).
 

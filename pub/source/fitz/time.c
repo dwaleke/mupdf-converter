@@ -1,7 +1,31 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #ifdef _WIN32
 
 #include "mupdf/fitz.h"
 
+#include <stdio.h>
+#include <errno.h>
 #include <time.h>
 #include <windows.h>
 
@@ -49,7 +73,7 @@ fz_utf8_from_wchar(const wchar_t *s)
 		len += fz_runelen(*src++);
 	}
 
-	d = malloc(len);
+	d = Memento_label(malloc(len), "utf8_from_wchar");
 	if (d != NULL)
 	{
 		dst = d;
@@ -73,13 +97,17 @@ fz_wchar_from_utf8(const char *s)
 		return NULL;
 	while (*s) {
 		s += fz_chartorune(&c, s);
+		/* Truncating c to a wchar_t can be problematic if c
+		 * is 0x10000. */
+		if (c >= 0x10000)
+			c = FZ_REPLACEMENT_CHARACTER;
 		*d++ = c;
 	}
 	*d = 0;
 	return r;
 }
 
-FILE *
+void *
 fz_fopen_utf8(const char *name, const char *mode)
 {
 	wchar_t *wname, *wmode;
@@ -105,13 +133,32 @@ fz_fopen_utf8(const char *name, const char *mode)
 	return file;
 }
 
+int
+fz_remove_utf8(const char *name)
+{
+	wchar_t *wname;
+	int n;
+
+	wname = fz_wchar_from_utf8(name);
+	if (wname == NULL)
+	{
+		errno = ENOMEM;
+		return -1;
+	}
+
+	n = _wremove(wname);
+
+	free(wname);
+	return n;
+}
+
 char **
 fz_argv_from_wargv(int argc, wchar_t **wargv)
 {
 	char **argv;
 	int i;
 
-	argv = calloc(argc, sizeof(char *));
+	argv = Memento_label(calloc(argc, sizeof(char *)), "fz_argv");
 	if (argv == NULL)
 	{
 		fprintf(stderr, "Out of memory while processing command line args!\n");
@@ -120,7 +167,7 @@ fz_argv_from_wargv(int argc, wchar_t **wargv)
 
 	for (i = 0; i < argc; i++)
 	{
-		argv[i] = fz_utf8_from_wchar(wargv[i]);
+		argv[i] = Memento_label(fz_utf8_from_wchar(wargv[i]), "fz_arg");
 		if (argv[i] == NULL)
 		{
 			fprintf(stderr, "Out of memory while processing command line args!\n");
@@ -139,5 +186,9 @@ fz_free_argv(int argc, char **argv)
 		free(argv[i]);
 	free(argv);
 }
+
+#else
+
+int fz_time_dummy;
 
 #endif /* _WIN32 */

@@ -5,11 +5,11 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2011, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2014, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at http://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.haxx.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -71,264 +71,90 @@ main ()
 }
 #endif
 
-#ifdef HAVE_GETHOSTBYADDR_R_5
+/* tests for gethostbyaddr_r or gethostbyname_r */
+#if defined(HAVE_GETHOSTBYADDR_R_5_REENTRANT) || \
+    defined(HAVE_GETHOSTBYADDR_R_7_REENTRANT) || \
+    defined(HAVE_GETHOSTBYADDR_R_8_REENTRANT) || \
+    defined(HAVE_GETHOSTBYNAME_R_3_REENTRANT) || \
+    defined(HAVE_GETHOSTBYNAME_R_5_REENTRANT) || \
+    defined(HAVE_GETHOSTBYNAME_R_6_REENTRANT)
+#   define _REENTRANT
+    /* no idea whether _REENTRANT is always set, just invent a new flag */
+#   define TEST_GETHOSTBYFOO_REENTRANT
+#endif
+#if defined(HAVE_GETHOSTBYADDR_R_5) || \
+    defined(HAVE_GETHOSTBYADDR_R_7) || \
+    defined(HAVE_GETHOSTBYADDR_R_8) || \
+    defined(HAVE_GETHOSTBYNAME_R_3) || \
+    defined(HAVE_GETHOSTBYNAME_R_5) || \
+    defined(HAVE_GETHOSTBYNAME_R_6) || \
+    defined(TEST_GETHOSTBYFOO_REENTRANT)
 #include <sys/types.h>
 #include <netdb.h>
-int
-main ()
+int main(void)
 {
-
-char * address;
-int length;
-int type;
-struct hostent h;
-struct hostent_data hdata;
-int rc;
-#ifndef gethostbyaddr_r
-  (void)gethostbyaddr_r;
+  char *address = "example.com";
+  int length = 0;
+  int type = 0;
+  struct hostent h;
+  int rc = 0;
+#if defined(HAVE_GETHOSTBYADDR_R_5) || \
+    defined(HAVE_GETHOSTBYADDR_R_5_REENTRANT) || \
+    \
+    defined(HAVE_GETHOSTBYNAME_R_3) || \
+    defined(HAVE_GETHOSTBYNAME_R_3_REENTRANT)
+  struct hostent_data hdata;
+#elif defined(HAVE_GETHOSTBYADDR_R_7) || \
+      defined(HAVE_GETHOSTBYADDR_R_7_REENTRANT) || \
+      defined(HAVE_GETHOSTBYADDR_R_8) || \
+      defined(HAVE_GETHOSTBYADDR_R_8_REENTRANT) || \
+      \
+      defined(HAVE_GETHOSTBYNAME_R_5) || \
+      defined(HAVE_GETHOSTBYNAME_R_5_REENTRANT) || \
+      defined(HAVE_GETHOSTBYNAME_R_6) || \
+      defined(HAVE_GETHOSTBYNAME_R_6_REENTRANT)
+  char buffer[8192];
+  int h_errnop;
+  struct hostent *hp;
 #endif
-rc = gethostbyaddr_r(address, length, type, &h, &hdata);
-  ;
-  return 0;
-}
-#endif
-#ifdef HAVE_GETHOSTBYADDR_R_5_REENTRANT
-#define _REENTRANT
-#include <sys/types.h>
-#include <netdb.h>
-int
-main ()
-{
-
-char * address;
-int length;q
-int type;
-struct hostent h;
-struct hostent_data hdata;
-int rc;
-#ifndef gethostbyaddr_r
-  (void)gethostbyaddr_r;
-#endif
-rc = gethostbyaddr_r(address, length, type, &h, &hdata);
-  ;
-  return 0;
-}
-#endif
-#ifdef HAVE_GETHOSTBYADDR_R_7
-#include <sys/types.h>
-#include <netdb.h>
-int
-main ()
-{
-
-char * address;
-int length;
-int type;
-struct hostent h;
-char buffer[8192];
-int h_errnop;
-struct hostent * hp;
 
 #ifndef gethostbyaddr_r
   (void)gethostbyaddr_r;
 #endif
-hp = gethostbyaddr_r(address, length, type, &h,
-                     buffer, 8192, &h_errnop);
-  ;
+
+#if   defined(HAVE_GETHOSTBYADDR_R_5) || \
+      defined(HAVE_GETHOSTBYADDR_R_5_REENTRANT)
+  rc = gethostbyaddr_r(address, length, type, &h, &hdata);
+  (void)rc;
+#elif defined(HAVE_GETHOSTBYADDR_R_7) || \
+      defined(HAVE_GETHOSTBYADDR_R_7_REENTRANT)
+  hp = gethostbyaddr_r(address, length, type, &h, buffer, 8192, &h_errnop);
+  (void)hp;
+#elif defined(HAVE_GETHOSTBYADDR_R_8) || \
+      defined(HAVE_GETHOSTBYADDR_R_8_REENTRANT)
+  rc = gethostbyaddr_r(address, length, type, &h, buffer, 8192, &hp, &h_errnop);
+  (void)rc;
+#endif
+
+#if   defined(HAVE_GETHOSTBYNAME_R_3) || \
+      defined(HAVE_GETHOSTBYNAME_R_3_REENTRANT)
+  rc = gethostbyname_r(address, &h, &hdata);
+#elif defined(HAVE_GETHOSTBYNAME_R_5) || \
+      defined(HAVE_GETHOSTBYNAME_R_5_REENTRANT)
+  rc = gethostbyname_r(address, &h, buffer, 8192, &h_errnop);
+  (void)hp; /* not used for test */
+#elif defined(HAVE_GETHOSTBYNAME_R_6) || \
+      defined(HAVE_GETHOSTBYNAME_R_6_REENTRANT)
+  rc = gethostbyname_r(address, &h, buffer, 8192, &hp, &h_errnop);
+#endif
+
+  (void)length;
+  (void)type;
+  (void)rc;
   return 0;
 }
 #endif
-#ifdef HAVE_GETHOSTBYADDR_R_7_REENTRANT
-#define _REENTRANT
-#include <sys/types.h>
-#include <netdb.h>
-int
-main ()
-{
 
-char * address;
-int length;
-int type;
-struct hostent h;
-char buffer[8192];
-int h_errnop;
-struct hostent * hp;
-
-#ifndef gethostbyaddr_r
-  (void)gethostbyaddr_r;
-#endif
-hp = gethostbyaddr_r(address, length, type, &h,
-                     buffer, 8192, &h_errnop);
-  ;
-  return 0;
-}
-#endif
-#ifdef HAVE_GETHOSTBYADDR_R_8
-#include <sys/types.h>
-#include <netdb.h>
-int
-main ()
-{
-
-char * address;
-int length;
-int type;
-struct hostent h;
-char buffer[8192];
-int h_errnop;
-struct hostent * hp;
-int rc;
-
-#ifndef gethostbyaddr_r
-  (void)gethostbyaddr_r;
-#endif
-rc = gethostbyaddr_r(address, length, type, &h,
-                     buffer, 8192, &hp, &h_errnop);
-  ;
-  return 0;
-}
-#endif
-#ifdef HAVE_GETHOSTBYADDR_R_8_REENTRANT
-#define _REENTRANT
-#include <sys/types.h>
-#include <netdb.h>
-int
-main ()
-{
-
-char * address;
-int length;
-int type;
-struct hostent h;
-char buffer[8192];
-int h_errnop;
-struct hostent * hp;
-int rc;
-
-#ifndef gethostbyaddr_r
-  (void)gethostbyaddr_r;
-#endif
-rc = gethostbyaddr_r(address, length, type, &h,
-                     buffer, 8192, &hp, &h_errnop);
-  ;
-  return 0;
-}
-#endif
-#ifdef HAVE_GETHOSTBYNAME_R_3
-#include <string.h>
-#include <sys/types.h>
-#include <netdb.h>
-#undef NULL
-#define NULL (void *)0
-
-int
-main ()
-{
-
-struct hostent_data data;
-#ifndef gethostbyname_r
-  (void)gethostbyname_r;
-#endif
-gethostbyname_r(NULL, NULL, NULL);
-  ;
-  return 0;
-}
-#endif
-#ifdef HAVE_GETHOSTBYNAME_R_3_REENTRANT
-#define _REENTRANT
-#include <string.h>
-#include <sys/types.h>
-#include <netdb.h>
-#undef NULL
-#define NULL (void *)0
-
-int
-main ()
-{
-
-struct hostent_data data;
-#ifndef gethostbyname_r
-  (void)gethostbyname_r;
-#endif
-gethostbyname_r(NULL, NULL, NULL);
-  ;
-  return 0;
-}
-#endif
-#ifdef HAVE_GETHOSTBYNAME_R_5
-#include <sys/types.h>
-#include <netinet/in.h>
-#include <netdb.h>
-#undef NULL
-#define NULL (void *)0
-
-int
-main ()
-{
-#ifndef gethostbyname_r
-  (void)gethostbyname_r;
-#endif
-gethostbyname_r(NULL, NULL, NULL, 0, NULL);
-  ;
-  return 0;
-}
-#endif
-#ifdef HAVE_GETHOSTBYNAME_R_5_REENTRANT
-#define _REENTRANT
-#include <sys/types.h>
-#include <netdb.h>
-#undef NULL
-#define NULL (void *)0
-
-int
-main ()
-{
-
-#ifndef gethostbyname_r
-  (void)gethostbyname_r;
-#endif
-gethostbyname_r(NULL, NULL, NULL, 0, NULL);
-  ;
-  return 0;
-}
-#endif
-#ifdef HAVE_GETHOSTBYNAME_R_6
-#include <sys/types.h>
-#include <netdb.h>
-#undef NULL
-#define NULL (void *)0
-
-int
-main ()
-{
-
-#ifndef gethostbyname_r
-  (void)gethostbyname_r;
-#endif
-gethostbyname_r(NULL, NULL, NULL, 0, NULL, NULL);
-  ;
-  return 0;
-}
-#endif
-#ifdef HAVE_GETHOSTBYNAME_R_6_REENTRANT
-#define _REENTRANT
-#include <sys/types.h>
-#include <netdb.h>
-#undef NULL
-#define NULL (void *)0
-
-int
-main ()
-{
-
-#ifndef gethostbyname_r
-  (void)gethostbyname_r;
-#endif
-gethostbyname_r(NULL, NULL, NULL, 0, NULL, NULL);
-  ;
-  return 0;
-}
-#endif
 #ifdef HAVE_SOCKLEN_T
 #ifdef _WIN32
 #include <ws2tcpip.h>
@@ -416,6 +242,7 @@ int main()
 #ifndef inet_ntoa_r
   func_type func;
   func = (func_type)inet_ntoa_r;
+  (void)func;
 #endif
   return 0;
 }
@@ -431,6 +258,7 @@ int main()
 #ifndef inet_ntoa_r
   func_type func;
   func = (func_type)&inet_ntoa_r;
+  (void)func;
 #endif
   return 0;
 }
@@ -683,29 +511,107 @@ main ()
 #ifdef HAVE_GLIBC_STRERROR_R
 #include <string.h>
 #include <errno.h>
+
+void check(char c) {}
+
 int
 main () {
-  char buffer[1024]; /* big enough to play with */
-  char *string =
-    strerror_r(EACCES, buffer, sizeof(buffer));
-    /* this should've returned a string */
-    if(!string || !string[0])
-      return 99;
-    return 0;
+  char buffer[1024];
+  /* This will not compile if strerror_r does not return a char* */
+  check(strerror_r(EACCES, buffer, sizeof(buffer))[0]);
+  return 0;
 }
 #endif
 #ifdef HAVE_POSIX_STRERROR_R
 #include <string.h>
 #include <errno.h>
+
+/* float, because a pointer can't be implicitly cast to float */
+void check(float f) {}
+
 int
 main () {
-  char buffer[1024]; /* big enough to play with */
-  int error =
-    strerror_r(EACCES, buffer, sizeof(buffer));
-    /* This should've returned zero, and written an error string in the
-       buffer.*/
-    if(!buffer[0] || error)
-      return 99;
-    return 0;
+  char buffer[1024];
+  /* This will not compile if strerror_r does not return an int */
+  check(strerror_r(EACCES, buffer, sizeof(buffer)));
+  return 0;
+}
+#endif
+#ifdef HAVE_FSETXATTR_6
+#include <sys/xattr.h> /* header from libc, not from libattr */
+int
+main() {
+  fsetxattr(0, 0, 0, 0, 0, 0);
+  return 0;
+}
+#endif
+#ifdef HAVE_FSETXATTR_5
+#include <sys/xattr.h> /* header from libc, not from libattr */
+int
+main() {
+  fsetxattr(0, 0, 0, 0, 0);
+  return 0;
+}
+#endif
+#ifdef HAVE_CLOCK_GETTIME_MONOTONIC
+#include <time.h>
+int
+main() {
+  struct timespec ts = {0, 0};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return 0;
+}
+#endif
+#ifdef HAVE_BUILTIN_AVAILABLE
+int
+main() {
+  if(__builtin_available(macOS 10.12, *)) {}
+  return 0;
+}
+#endif
+#ifdef HAVE_VARIADIC_MACROS_C99
+#define c99_vmacro3(first, ...) fun3(first, __VA_ARGS__)
+#define c99_vmacro2(first, ...) fun2(first, __VA_ARGS__)
+
+int fun3(int arg1, int arg2, int arg3);
+int fun2(int arg1, int arg2);
+
+int fun3(int arg1, int arg2, int arg3) {
+  return arg1 + arg2 + arg3;
+}
+int fun2(int arg1, int arg2) {
+  return arg1 + arg2;
+}
+
+int
+main() {
+  int res3 = c99_vmacro3(1, 2, 3);
+  int res2 = c99_vmacro2(1, 2);
+  (void)res3;
+  (void)res2;
+  return 0;
+}
+#endif
+#ifdef HAVE_VARIADIC_MACROS_GCC
+#define gcc_vmacro3(first, args...) fun3(first, args)
+#define gcc_vmacro2(first, args...) fun2(first, args)
+
+int fun3(int arg1, int arg2, int arg3);
+int fun2(int arg1, int arg2);
+
+int fun3(int arg1, int arg2, int arg3) {
+  return arg1 + arg2 + arg3;
+}
+int fun2(int arg1, int arg2) {
+  return arg1 + arg2;
+}
+
+int
+main() {
+  int res3 = gcc_vmacro3(1, 2, 3);
+  int res2 = gcc_vmacro2(1, 2);
+  (void)res3;
+  (void)res2;
+  return 0;
 }
 #endif

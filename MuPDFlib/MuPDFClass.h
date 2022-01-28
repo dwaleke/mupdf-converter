@@ -14,6 +14,8 @@
 #define MuPDFDLL_API __declspec(dllimport)
 #endif
 
+#include <vcruntime_string.h>
+
 extern "C" {
 #include "mupdf/fitz.h"
 }
@@ -110,13 +112,14 @@ public:
 		_page = NULL;
 		_PageCount = -1;
 		_CurrentPage = -1;
+		_CurrentPageWidth = 0;
+		_CurrentPageHeight = 0;
 		_BitmapBuffer = NULL;
 		static int showmemory = 0;
-		fz_alloc_context alloc_ctx = { NULL, trace_malloc, trace_realloc, trace_free };
 
 		fz_var(_doc);
 
-		_ctx = fz_new_context((showmemory == 0 ? NULL : &alloc_ctx), NULL, FZ_STORE_DEFAULT);
+		_ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
 		if (!_ctx)
 		{
 			//error here

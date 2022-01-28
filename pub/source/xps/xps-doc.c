@@ -1,4 +1,30 @@
-#include "mupdf/xps.h"
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
+#include "mupdf/fitz.h"
+#include "xps-imp.h"
+
+#include <string.h>
+#include <stdlib.h>
 
 #define REL_START_PART \
 	"http://schemas.microsoft.com/xps/2005/06/fixedrepresentation"
@@ -33,28 +59,6 @@ xps_rels_for_part(fz_context *ctx, xps_document *doc, char *buf, char *name, int
  * which parts correspond to actual pages, and the page order.
  */
 
-void
-xps_print_page_list(fz_context *ctx, xps_document *doc)
-{
-	xps_fixdoc *fixdoc = doc->first_fixdoc;
-	xps_fixpage *page = doc->first_page;
-
-	if (doc->start_part)
-		printf("start part %s\n", doc->start_part);
-
-	while (fixdoc)
-	{
-		printf("fixdoc %s\n", fixdoc->name);
-		fixdoc = fixdoc->next;
-	}
-
-	while (page)
-	{
-		printf("page[%d] %s w=%d h=%d\n", page->number, page->name, page->width, page->height);
-		page = page->next;
-	}
-}
-
 static void
 xps_add_fixed_document(fz_context *ctx, xps_document *doc, char *name)
 {
@@ -66,9 +70,17 @@ xps_add_fixed_document(fz_context *ctx, xps_document *doc, char *name)
 			return;
 
 	fixdoc = fz_malloc_struct(ctx, xps_fixdoc);
-	fixdoc->name = fz_strdup(ctx, name);
-	fixdoc->outline = NULL;
-	fixdoc->next = NULL;
+	fz_try(ctx)
+	{
+		fixdoc->name = fz_strdup(ctx, name);
+		fixdoc->outline = NULL;
+		fixdoc->next = NULL;
+	}
+	fz_catch(ctx)
+	{
+		fz_free(ctx, fixdoc);
+		fz_rethrow(ctx);
+	}
 
 	if (!doc->first_fixdoc)
 	{
@@ -93,11 +105,22 @@ xps_add_fixed_page(fz_context *ctx, xps_document *doc, char *name, int width, in
 			return;
 
 	page = fz_malloc_struct(ctx, xps_fixpage);
-	page->name = fz_strdup(ctx, name);
-	page->number = doc->page_count++;
-	page->width = width;
-	page->height = height;
-	page->next = NULL;
+	page->name = NULL;
+
+	fz_try(ctx)
+	{
+		page->name = fz_strdup(ctx, name);
+		page->number = doc->page_count++;
+		page->width = width;
+		page->height = height;
+		page->next = NULL;
+	}
+	fz_catch(ctx)
+	{
+		fz_free(ctx, page->name);
+		fz_free(ctx, page);
+		fz_rethrow(ctx);
+	}
 
 	if (!doc->first_page)
 	{
@@ -115,23 +138,42 @@ static void
 xps_add_link_target(fz_context *ctx, xps_document *doc, char *name)
 {
 	xps_fixpage *page = doc->last_page;
-	xps_target *target = fz_malloc_struct(ctx, xps_target);
-	target->name = fz_strdup(ctx, name);
-	target->page = page->number;
-	target->next = doc->target;
+	xps_target *target;
+
+	if (page == NULL)
+	{
+		fz_warn(ctx, "Dropping link target with no page");
+		return;
+	}
+
+	target = fz_malloc_struct(ctx, xps_target);
+
+	fz_try(ctx)
+	{
+		target->name = fz_strdup(ctx, name);
+		target->page = page->number;
+		target->next = doc->target;
+	}
+	fz_catch(ctx)
+	{
+		fz_free(ctx, target);
+		fz_rethrow(ctx);
+	}
+
 	doc->target = target;
 }
 
-int
-xps_lookup_link_target(fz_context *ctx, xps_document *doc, char *target_uri)
+fz_location
+xps_lookup_link_target(fz_context *ctx, fz_document *doc_, const char *target_uri, float *xp, float *yp)
 {
+	xps_document *doc = (xps_document*)doc_;
 	xps_target *target;
-	char *needle = strrchr(target_uri, '#');
+	const char *needle = strrchr(target_uri, '#');
 	needle = needle ? needle + 1 : target_uri;
 	for (target = doc->target; target; target = target->next)
 		if (!strcmp(target->name, needle))
-			return target->page;
-	return 0;
+			return fz_make_location(0, target->page);
+	return fz_make_location(-1, -1);
 }
 
 static void
@@ -204,7 +246,10 @@ xps_parse_metadata_imp(fz_context *ctx, xps_document *doc, fz_xml *item, xps_fix
 				char tgtbuf[1024];
 				xps_resolve_url(ctx, doc, tgtbuf, doc->base_uri, target, sizeof tgtbuf);
 				if (!strcmp(type, REL_START_PART) || !strcmp(type, REL_START_PART_OXPS))
+				{
+					fz_free(ctx, doc->start_part);
 					doc->start_part = fz_strdup(ctx, tgtbuf);
+				}
 				if ((!strcmp(type, REL_DOC_STRUCTURE) || !strcmp(type, REL_DOC_STRUCTURE_OXPS)) && fixdoc)
 					fixdoc->outline = fz_strdup(ctx, tgtbuf);
 				if (!fz_xml_att(item, "Id"))
@@ -254,7 +299,7 @@ xps_parse_metadata_imp(fz_context *ctx, xps_document *doc, fz_xml *item, xps_fix
 static void
 xps_parse_metadata(fz_context *ctx, xps_document *doc, xps_part *part, xps_fixdoc *fixdoc)
 {
-	fz_xml *root;
+	fz_xml_doc *xml;
 	char buf[1024];
 	char *s;
 
@@ -275,12 +320,19 @@ xps_parse_metadata(fz_context *ctx, xps_document *doc, xps_part *part, xps_fixdo
 	doc->base_uri = buf;
 	doc->part_uri = part->name;
 
-	root = fz_parse_xml(ctx, part->data, part->size, 0);
-	xps_parse_metadata_imp(ctx, doc, root, fixdoc);
-	fz_drop_xml(ctx, root);
-
-	doc->base_uri = NULL;
-	doc->part_uri = NULL;
+	xml = fz_parse_xml(ctx, part->data, 0);
+	fz_try(ctx)
+	{
+		xps_parse_metadata_imp(ctx, doc, fz_xml_root(xml), fixdoc);
+	}
+	fz_always(ctx)
+	{
+		fz_drop_xml(ctx, xml);
+		doc->base_uri = NULL;
+		doc->part_uri = NULL;
+	}
+	fz_catch(ctx)
+		fz_rethrow(ctx);
 }
 
 static void
@@ -336,15 +388,17 @@ xps_read_page_list(fz_context *ctx, xps_document *doc)
 }
 
 int
-xps_count_pages(fz_context *ctx, xps_document *doc)
+xps_count_pages(fz_context *ctx, fz_document *doc_, int chapter)
 {
+	xps_document *doc = (xps_document*)doc_;
 	return doc->page_count;
 }
 
-static fz_xml *
+static fz_xml_doc *
 xps_load_fixed_page(fz_context *ctx, xps_document *doc, xps_fixpage *page)
 {
 	xps_part *part;
+	fz_xml_doc *xml = NULL;
 	fz_xml *root;
 	char *width_att;
 	char *height_att;
@@ -352,7 +406,32 @@ xps_load_fixed_page(fz_context *ctx, xps_document *doc, xps_fixpage *page)
 	part = xps_read_part(ctx, doc, page->name);
 	fz_try(ctx)
 	{
-		root = fz_parse_xml(ctx, part->data, part->size, 0);
+		xml = fz_parse_xml(ctx, part->data, 0);
+
+		root = fz_xml_root(xml);
+		if (!root)
+			fz_throw(ctx, FZ_ERROR_GENERIC, "FixedPage missing root element");
+
+		if (fz_xml_is_tag(root, "AlternateContent"))
+		{
+			fz_xml *node = xps_lookup_alternate_content(ctx, doc, root);
+			if (!node)
+				fz_throw(ctx, FZ_ERROR_GENERIC, "FixedPage missing alternate root element");
+			fz_detach_xml(ctx, xml, node);
+			root = node;
+		}
+
+		if (!fz_xml_is_tag(root, "FixedPage"))
+			fz_throw(ctx, FZ_ERROR_GENERIC, "expected FixedPage element");
+		width_att = fz_xml_att(root, "Width");
+		if (!width_att)
+			fz_throw(ctx, FZ_ERROR_GENERIC, "FixedPage missing required attribute: Width");
+		height_att = fz_xml_att(root, "Height");
+		if (!height_att)
+			fz_throw(ctx, FZ_ERROR_GENERIC, "FixedPage missing required attribute: Height");
+
+		page->width = atoi(width_att);
+		page->height = atoi(height_att);
 	}
 	fz_always(ctx)
 	{
@@ -360,75 +439,38 @@ xps_load_fixed_page(fz_context *ctx, xps_document *doc, xps_fixpage *page)
 	}
 	fz_catch(ctx)
 	{
-		fz_rethrow_if(ctx, FZ_ERROR_TRYLATER);
-		root = NULL;
-	}
-	if (!root)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "FixedPage missing root element");
-
-	if (fz_xml_is_tag(root, "AlternateContent"))
-	{
-		fz_xml *node = xps_lookup_alternate_content(ctx, doc, root);
-		if (!node)
-		{
-			fz_drop_xml(ctx, root);
-			fz_throw(ctx, FZ_ERROR_GENERIC, "FixedPage missing alternate root element");
-		}
-		fz_detach_xml(node);
-		fz_drop_xml(ctx, root);
-		root = node;
+		fz_drop_xml(ctx, xml);
+		fz_rethrow(ctx);
 	}
 
-	if (!fz_xml_is_tag(root, "FixedPage"))
-	{
-		fz_drop_xml(ctx, root);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "expected FixedPage element");
-	}
-
-	width_att = fz_xml_att(root, "Width");
-	if (!width_att)
-	{
-		fz_drop_xml(ctx, root);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "FixedPage missing required attribute: Width");
-	}
-
-	height_att = fz_xml_att(root, "Height");
-	if (!height_att)
-	{
-		fz_drop_xml(ctx, root);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "FixedPage missing required attribute: Height");
-	}
-
-	page->width = atoi(width_att);
-	page->height = atoi(height_att);
-
-	return root;
+	return xml;
 }
 
-fz_rect *
-xps_bound_page(fz_context *ctx, xps_page *page, fz_rect *bounds)
+static fz_rect
+xps_bound_page(fz_context *ctx, fz_page *page_)
 {
-	bounds->x0 = bounds->y0 = 0;
-	bounds->x1 = page->fix->width * 72.0f / 96.0f;
-	bounds->y1 = page->fix->height * 72.0f / 96.0f;
+	xps_page *page = (xps_page*)page_;
+	fz_rect bounds;
+	bounds.x0 = bounds.y0 = 0;
+	bounds.x1 = page->fix->width * 72.0f / 96.0f;
+	bounds.y1 = page->fix->height * 72.0f / 96.0f;
 	return bounds;
 }
 
-void
-xps_drop_page_imp(fz_context *ctx, xps_page *page)
+static void
+xps_drop_page_imp(fz_context *ctx, fz_page *page_)
 {
-	if (page == NULL)
-		return;
-	fz_drop_document(ctx, &page->doc->super);
-	fz_drop_xml(ctx, page->root);
+	xps_page *page = (xps_page*)page_;
+	fz_drop_xml(ctx, page->xml);
 }
 
-xps_page *
-xps_load_page(fz_context *ctx, xps_document *doc, int number)
+fz_page *
+xps_load_page(fz_context *ctx, fz_document *doc_, int chapter, int number)
 {
+	xps_document *doc = (xps_document*)doc_;
 	xps_page *page = NULL;
 	xps_fixpage *fix;
-	fz_xml *root;
+	fz_xml_doc *xml;
 	int n = 0;
 
 	fz_var(page);
@@ -437,25 +479,24 @@ xps_load_page(fz_context *ctx, xps_document *doc, int number)
 	{
 		if (n == number)
 		{
-			root = xps_load_fixed_page(ctx, doc, fix);
+			xml = xps_load_fixed_page(ctx, doc, fix);
 			fz_try(ctx)
 			{
-				page = fz_new_page(ctx, sizeof *page);
-				page->super.load_links = (fz_page_load_links_fn *)xps_load_links;
-				page->super.bound_page = (fz_page_bound_page_fn *)xps_bound_page;
-				page->super.run_page_contents = (fz_page_run_page_contents_fn *)xps_run_page;
-				page->super.drop_page_imp = (fz_page_drop_page_imp_fn *)xps_drop_page_imp;
+				page = fz_new_derived_page(ctx, xps_page, doc_);
+				page->super.load_links = xps_load_links;
+				page->super.bound_page = xps_bound_page;
+				page->super.run_page_contents = xps_run_page;
+				page->super.drop_page = xps_drop_page_imp;
 
-				page->doc = (xps_document*) fz_keep_document(ctx, &doc->super);
 				page->fix = fix;
-				page->root = root;
+				page->xml = xml;
 			}
 			fz_catch(ctx)
 			{
-				fz_drop_xml(ctx, root);
+				fz_drop_xml(ctx, xml);
 				fz_rethrow(ctx);
 			}
-			return page;
+			return (fz_page*)page;
 		}
 		n ++;
 	}
@@ -466,25 +507,33 @@ xps_load_page(fz_context *ctx, xps_document *doc, int number)
 static int
 xps_recognize(fz_context *ctx, const char *magic)
 {
-	char *ext = strrchr(magic, '.');
-
-	if (ext)
-	{
-		if (!fz_strcasecmp(ext, ".xps") || !fz_strcasecmp(ext, ".rels") || !fz_strcasecmp(ext, ".oxps"))
-			return 100;
-	}
-	if (!strcmp(magic, "xps") || !strcmp(magic, "oxps") ||
-		!strcmp(magic, "application/vnd.ms-xpsdocument") ||
-		!strcmp(magic, "application/xps") ||
-		!strcmp(magic, "application/oxps"))
+	if (strstr(magic, "/_rels/.rels") || strstr(magic, "\\_rels\\.rels"))
 		return 100;
-
 	return 0;
 }
 
+static const char *xps_extensions[] =
+{
+	"oxps",
+	"xps",
+	NULL
+};
+
+static const char *xps_mimetypes[] =
+{
+	"application/oxps",
+	"application/vnd.ms-xpsdocument",
+	"application/xps",
+	NULL
+};
+
 fz_document_handler xps_document_handler =
 {
-	(fz_document_recognize_fn *)&xps_recognize,
-	(fz_document_open_fn *)&xps_open_document,
-	(fz_document_open_with_stream_fn *)&xps_open_document_with_stream
+	xps_recognize,
+	xps_open_document,
+	xps_open_document_with_stream,
+	xps_extensions,
+	xps_mimetypes,
+	NULL,
+	NULL
 };

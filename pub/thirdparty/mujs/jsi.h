@@ -11,30 +11,50 @@
 #include <setjmp.h>
 #include <math.h>
 #include <float.h>
+#include <limits.h>
 
 /* Microsoft Visual C */
 #ifdef _MSC_VER
 #pragma warning(disable:4996) /* _CRT_SECURE_NO_WARNINGS */
 #pragma warning(disable:4244) /* implicit conversion from double to int */
 #pragma warning(disable:4267) /* implicit conversion of int to smaller int */
+#pragma warning(disable:4090) /* broken const warnings */
 #define inline __inline
-#define snprintf _snprintf
-#define vsnprintf _vsnprintf
-#if _MSC_VER < 1800
-#define round(x) floor((x) < 0 ? (x) - 0.5 : (x) + 0.5)
+#if _MSC_VER < 1900 /* MSVC 2015 */
+#define snprintf jsW_snprintf
+#define vsnprintf jsW_vsnprintf
+static int jsW_vsnprintf(char *str, size_t size, const char *fmt, va_list ap)
+{
+	int n;
+	n = _vsnprintf(str, size, fmt, ap);
+	str[size-1] = 0;
+	return n;
+}
+static int jsW_snprintf(char *str, size_t size, const char *fmt, ...)
+{
+	int n;
+	va_list ap;
+	va_start(ap, fmt);
+	n = jsW_vsnprintf(str, size, fmt, ap);
+	va_end(ap);
+	return n;
+}
+#endif
+#if _MSC_VER <= 1700 /* <= MSVC 2012 */
 #define isnan(x) _isnan(x)
 #define isinf(x) (!_finite(x))
 #define isfinite(x) _finite(x)
-static __inline int signbit(double x) {union{double d;__int64 i;}u;u.d=x;return u.i>>63;}
+static __inline int signbit(double x) { __int64 i; memcpy(&i, &x, 8); return i>>63; }
 #define INFINITY (DBL_MAX+DBL_MAX)
 #define NAN (INFINITY-INFINITY)
-#endif /* old MSVC */
+#endif
 #endif
 
-#define nelem(a) (sizeof (a) / sizeof (a)[0])
+#define soffsetof(x,y) ((int)offsetof(x,y))
+#define nelem(a) (int)(sizeof (a) / sizeof (a)[0])
 
-void *js_malloc(js_State *J, unsigned int size);
-void *js_realloc(js_State *J, void *ptr, unsigned int size);
+void *js_malloc(js_State *J, int size);
+void *js_realloc(js_State *J, void *ptr, int size);
 void js_free(js_State *J, void *ptr);
 
 typedef struct js_Regexp js_Regexp;
@@ -50,16 +70,41 @@ typedef struct js_StackTrace js_StackTrace;
 
 /* Limits */
 
+#ifndef JS_STACKSIZE
 #define JS_STACKSIZE 256	/* value stack size */
-#define JS_ENVLIMIT 64		/* environment stack size */
+#endif
+#ifndef JS_ENVLIMIT
+#define JS_ENVLIMIT 128		/* environment stack size */
+#endif
+#ifndef JS_TRYLIMIT
 #define JS_TRYLIMIT 64		/* exception stack size */
-#define JS_GCLIMIT 10000	/* run gc cycle every N allocations */
+#endif
+#ifndef JS_GCFACTOR
+/*
+ * GC will try to trigger when memory usage is this value times the minimum
+ * needed memory. E.g. if there are 100 remaining objects after GC and this
+ * value is 5.0, then the next GC will trigger when the overall number is 500.
+ * I.e. a value of 5.0 aims at 80% garbage, 20% remain-used on each GC.
+ * The bigger the value the less impact GC has on overall performance, but more
+ * memory is used and individual GC pauses are longer (but fewer).
+ */
+#define JS_GCFACTOR 5.0		/* memory overhead factor >= 1.0 */
+#endif
+#ifndef JS_ASTLIMIT
+#define JS_ASTLIMIT 100		/* max nested expressions */
+#endif
 
-/* instruction size -- change to unsigned int if you get integer overflow syntax errors */
+/* instruction size -- change to int if you get integer overflow syntax errors */
+
+#ifdef JS_INSTRUCTION
+typedef JS_INSTRUCTION js_Instruction;
+#else
 typedef unsigned short js_Instruction;
+#endif
 
 /* String interning */
 
+char *js_strdup(js_State *J, const char *s);
 const char *js_intern(js_State *J, const char *s);
 void jsS_dumpstrings(js_State *J);
 void jsS_freestrings(js_State *J);
@@ -67,17 +112,20 @@ void jsS_freestrings(js_State *J);
 /* Portable strtod and printf float formatting */
 
 void js_fmtexp(char *p, int e);
-void js_dtoa(double f, char *digits, int *exp, int *neg, int *ndigits);
+int js_grisu2(double v, char *buffer, int *K);
 double js_strtod(const char *as, char **aas);
+
+double js_strtol(const char *s, char **ep, int radix);
 
 /* Private stack functions */
 
+void js_newarguments(js_State *J);
 void js_newfunction(js_State *J, js_Function *function, js_Environment *scope);
 void js_newscript(js_State *J, js_Function *function, js_Environment *scope);
 void js_loadeval(js_State *J, const char *filename, const char *source);
 
 js_Regexp *js_toregexp(js_State *J, int idx);
-int js_isarrayindex(js_State *J, const char *str, unsigned int *idx);
+int js_isarrayindex(js_State *J, const char *str, int *idx);
 int js_runeat(js_State *J, const char *s, int i);
 int js_utfptrtoidx(const char *s, const char *p);
 const char *js_utfidxtoptr(const char *s, int i);
@@ -91,8 +139,6 @@ void js_rot2pop1(js_State *J);
 void js_rot3pop2(js_State *J);
 void js_dup1rot3(js_State *J);
 void js_dup1rot4(js_State *J);
-
-void js_pushundefinedthis(js_State *J); /* push 'global' if non-strict, undefined if strict */
 
 void js_RegExp_prototype_exec(js_State *J, js_Regexp *re, const char *text);
 
@@ -114,19 +160,22 @@ struct js_Jumpbuf
 	int envtop;
 	int tracetop;
 	int top, bot;
+	int strict;
 	js_Instruction *pc;
 };
 
-void js_savetry(js_State *J, js_Instruction *pc);
+void *js_savetrypc(js_State *J, js_Instruction *pc);
 
 #define js_trypc(J, PC) \
-	setjmp((js_savetry(J, PC), J->trybuf[J->trytop++].buf))
+	setjmp(js_savetrypc(J, PC))
 
-#define js_try(J) \
-	setjmp((js_savetry(J, NULL), J->trybuf[J->trytop++].buf))
+/* String buffer */
 
-#define js_endtry(J) \
-	(--J->trytop)
+typedef struct js_Buffer { int n, m; char s[64]; } js_Buffer;
+
+void js_putc(js_State *J, js_Buffer **sbp, int c);
+void js_puts(js_State *J, js_Buffer **sb, const char *s);
+void js_putm(js_State *J, js_Buffer **sb, const char *s, const char *e);
 
 /* State struct */
 
@@ -135,10 +184,12 @@ struct js_State
 	void *actx;
 	void *uctx;
 	js_Alloc alloc;
+	js_Report report;
 	js_Panic panic;
 
 	js_StringNode *strings;
 
+	int default_strict;
 	int strict;
 
 	/* parser input source */
@@ -147,14 +198,14 @@ struct js_State
 	int line;
 
 	/* lexer state */
-	struct { char *text; unsigned int len, cap; } lexbuf;
+	struct { char *text; int len, cap; } lexbuf;
 	int lexline;
 	int lexchar;
 	int lasttoken;
 	int newline;
 
 	/* parser state */
-	int astline;
+	int astdepth;
 	int lookahead;
 	const char *text;
 	double number;
@@ -178,6 +229,8 @@ struct js_State
 	js_Object *TypeError_prototype;
 	js_Object *URIError_prototype;
 
+	unsigned int seed; /* Math.random seed */
+
 	int nextref; /* for js_ref use */
 	js_Object *R; /* registry of hidden values */
 	js_Object *G; /* the global object */
@@ -189,13 +242,15 @@ struct js_State
 	js_Value *stack;
 
 	/* garbage collector list */
+	int gcpause;
 	int gcmark;
-	int gccounter;
+	unsigned int gccounter, gcthresh;
 	js_Environment *gcenv;
 	js_Function *gcfun;
 	js_Object *gcobj;
 	js_String *gcstr;
 
+	js_Object *gcroot; /* gc scan list */
 
 	/* environments on the call stack but currently not in scope */
 	int envtop;

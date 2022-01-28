@@ -1,4 +1,31 @@
-#include "mupdf/xps.h"
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
+#include "mupdf/fitz.h"
+#include "xps-imp.h"
+
+#include <string.h>
+#include <stdio.h> /* for sscanf */
+#include <math.h> /* for pow */
 
 static inline int unhex(int a)
 {
@@ -29,7 +56,7 @@ xps_lookup_alternate_content(fz_context *ctx, xps_document *doc, fz_xml *node)
 }
 
 void
-xps_parse_brush(fz_context *ctx, xps_document *doc, const fz_matrix *ctm, const fz_rect *area, char *base_uri, xps_resource *dict, fz_xml *node)
+xps_parse_brush(fz_context *ctx, xps_document *doc, fz_matrix ctm, fz_rect area, char *base_uri, xps_resource *dict, fz_xml *node)
 {
 	if (doc->cookie && doc->cookie->abort)
 		return;
@@ -43,11 +70,11 @@ xps_parse_brush(fz_context *ctx, xps_document *doc, const fz_matrix *ctm, const 
 	else if (fz_xml_is_tag(node, "RadialGradientBrush"))
 		xps_parse_radial_gradient_brush(ctx, doc, ctm, area, base_uri, dict, node);
 	else
-		fz_warn(ctx, "unknown brush tag: %s", fz_xml_tag(node));
+		fz_warn(ctx, "unknown brush tag");
 }
 
 void
-xps_parse_element(fz_context *ctx, xps_document *doc, const fz_matrix *ctm, const fz_rect *area, char *base_uri, xps_resource *dict, fz_xml *node)
+xps_parse_element(fz_context *ctx, xps_document *doc, fz_matrix ctm, fz_rect area, char *base_uri, xps_resource *dict, fz_xml *node)
 {
 	if (doc->cookie && doc->cookie->abort)
 		return;
@@ -67,7 +94,7 @@ xps_parse_element(fz_context *ctx, xps_document *doc, const fz_matrix *ctm, cons
 }
 
 void
-xps_begin_opacity(fz_context *ctx, xps_document *doc, const fz_matrix *ctm, const fz_rect *area,
+xps_begin_opacity(fz_context *ctx, xps_document *doc, fz_matrix ctm, fz_rect area,
 	char *base_uri, xps_resource *dict,
 	char *opacity_att, fz_xml *opacity_mask_tag)
 {
@@ -81,7 +108,7 @@ xps_begin_opacity(fz_context *ctx, xps_document *doc, const fz_matrix *ctm, cons
 	if (opacity_att)
 		opacity = fz_atof(opacity_att);
 
-	if (opacity_mask_tag && !strcmp(fz_xml_tag(opacity_mask_tag), "SolidColorBrush"))
+	if (fz_xml_is_tag(opacity_mask_tag, "SolidColorBrush"))
 	{
 		char *scb_opacity_att = fz_xml_att(opacity_mask_tag, "Opacity");
 		char *scb_color_att = fz_xml_att(opacity_mask_tag, "Color");
@@ -97,7 +124,7 @@ xps_begin_opacity(fz_context *ctx, xps_document *doc, const fz_matrix *ctm, cons
 		opacity_mask_tag = NULL;
 	}
 
-	if (doc->opacity_top + 1 < nelem(doc->opacity))
+	if (doc->opacity_top + 1 < (int)nelem(doc->opacity))
 	{
 		doc->opacity[doc->opacity_top + 1] = doc->opacity[doc->opacity_top] * opacity;
 		doc->opacity_top++;
@@ -105,7 +132,7 @@ xps_begin_opacity(fz_context *ctx, xps_document *doc, const fz_matrix *ctm, cons
 
 	if (opacity_mask_tag)
 	{
-		fz_begin_mask(ctx, dev, area, 0, NULL, NULL);
+		fz_begin_mask(ctx, dev, area, 0, NULL, NULL, fz_default_color_params);
 		xps_parse_brush(ctx, doc, ctm, area, base_uri, dict, opacity_mask_tag);
 		fz_end_mask(ctx, dev);
 	}
@@ -125,14 +152,15 @@ xps_end_opacity(fz_context *ctx, xps_document *doc, char *base_uri, xps_resource
 
 	if (opacity_mask_tag)
 	{
-		if (strcmp(fz_xml_tag(opacity_mask_tag), "SolidColorBrush"))
+		if (!fz_xml_is_tag(opacity_mask_tag, "SolidColorBrush"))
 			fz_pop_clip(ctx, dev);
 	}
 }
 
-static void
-xps_parse_render_transform(fz_context *ctx, xps_document *doc, char *transform, fz_matrix *matrix)
+static fz_matrix
+xps_parse_render_transform(fz_context *ctx, xps_document *doc, char *transform)
 {
+	fz_matrix matrix;
 	float args[6];
 	char *s = transform;
 	int i;
@@ -150,40 +178,38 @@ xps_parse_render_transform(fz_context *ctx, xps_document *doc, char *transform, 
 			s++;
 	}
 
-	matrix->a = args[0]; matrix->b = args[1];
-	matrix->c = args[2]; matrix->d = args[3];
-	matrix->e = args[4]; matrix->f = args[5];
+	matrix.a = args[0]; matrix.b = args[1];
+	matrix.c = args[2]; matrix.d = args[3];
+	matrix.e = args[4]; matrix.f = args[5];
+	return matrix;
 }
 
-static void
-xps_parse_matrix_transform(fz_context *ctx, xps_document *doc, fz_xml *root, fz_matrix *matrix)
+static fz_matrix
+xps_parse_matrix_transform(fz_context *ctx, xps_document *doc, fz_xml *root)
 {
-	char *transform;
-
-	*matrix = fz_identity;
-
 	if (fz_xml_is_tag(root, "MatrixTransform"))
 	{
-		transform = fz_xml_att(root, "Matrix");
+		char *transform = fz_xml_att(root, "Matrix");
 		if (transform)
-			xps_parse_render_transform(ctx, doc, transform, matrix);
+			return xps_parse_render_transform(ctx, doc, transform);
 	}
+	return fz_identity;
 }
 
-void
-xps_parse_transform(fz_context *ctx, xps_document *doc, char *att, fz_xml *tag, fz_matrix *transform, const fz_matrix *ctm)
+fz_matrix
+xps_parse_transform(fz_context *ctx, xps_document *doc, char *att, fz_xml *tag, fz_matrix ctm)
 {
-	*transform = fz_identity;
 	if (att)
-		xps_parse_render_transform(ctx, doc, att, transform);
+		return fz_concat(xps_parse_render_transform(ctx, doc, att), ctm);
 	if (tag)
-		xps_parse_matrix_transform(ctx, doc, tag, transform);
-	fz_concat(transform, transform, ctm);
+		return fz_concat(xps_parse_matrix_transform(ctx, doc, tag), ctm);
+	return ctm;
 }
 
-void
-xps_parse_rectangle(fz_context *ctx, xps_document *doc, char *text, fz_rect *rect)
+fz_rect
+xps_parse_rectangle(fz_context *ctx, xps_document *doc, char *text)
 {
+	fz_rect rect;
 	float args[4];
 	char *s = text;
 	int i;
@@ -200,10 +226,11 @@ xps_parse_rectangle(fz_context *ctx, xps_document *doc, char *text, fz_rect *rec
 			s++;
 	}
 
-	rect->x0 = args[0];
-	rect->y0 = args[1];
-	rect->x1 = args[0] + args[2];
-	rect->y1 = args[1] + args[3];
+	rect.x0 = args[0];
+	rect.y0 = args[1];
+	rect.x1 = args[0] + args[2];
+	rect.y1 = args[1] + args[3];
+	return rect;
 }
 
 static int count_commas(char *s)
@@ -216,6 +243,13 @@ static int count_commas(char *s)
 		s ++;
 	}
 	return n;
+}
+
+static float sRGB_from_scRGB(float x)
+{
+	if (x < 0.0031308f)
+		return 12.92f * x;
+	return 1.055f * pow(x, 1/2.4f) - 0.055f;
 }
 
 void
@@ -263,6 +297,11 @@ xps_parse_color(fz_context *ctx, xps_document *doc, char *base_uri, char *string
 			sscanf(string, "sc#%g,%g,%g", samples + 1, samples + 2, samples + 3);
 		if (count_commas(string) == 3)
 			sscanf(string, "sc#%g,%g,%g,%g", samples, samples + 1, samples + 2, samples + 3);
+
+		/* Convert from scRGB gamma 1.0 to sRGB gamma */
+		samples[1] = sRGB_from_scRGB(samples[1]);
+		samples[2] = sRGB_from_scRGB(samples[2]);
+		samples[3] = sRGB_from_scRGB(samples[3]);
 	}
 
 	else if (strstr(string, "ContextColor ") == string)
@@ -323,8 +362,9 @@ void
 xps_set_color(fz_context *ctx, xps_document *doc, fz_colorspace *colorspace, float *samples)
 {
 	int i;
+	int n = fz_colorspace_n(ctx, colorspace);
 	doc->colorspace = colorspace;
-	for (i = 0; i < colorspace->n; i++)
+	for (i = 0; i < n; i++)
 		doc->color[i] = samples[i + 1];
 	doc->alpha = samples[0] * doc->opacity[doc->opacity_top];
 }

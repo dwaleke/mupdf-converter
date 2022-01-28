@@ -1,26 +1,25 @@
-/***************************************************************************/
-/*                                                                         */
-/*  pfrdrivr.c                                                             */
-/*                                                                         */
-/*    FreeType PFR driver interface (body).                                */
-/*                                                                         */
-/*  Copyright 2002-2015 by                                                 */
-/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */
-/*                                                                         */
-/*  This file is part of the FreeType project, and may only be used,       */
-/*  modified, and distributed under the terms of the FreeType project      */
-/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */
-/*  this file you indicate that you have read the license and              */
-/*  understand and accept it fully.                                        */
-/*                                                                         */
-/***************************************************************************/
+/****************************************************************************
+ *
+ * pfrdrivr.c
+ *
+ *   FreeType PFR driver interface (body).
+ *
+ * Copyright (C) 2002-2020 by
+ * David Turner, Robert Wilhelm, and Werner Lemberg.
+ *
+ * This file is part of the FreeType project, and may only be used,
+ * modified, and distributed under the terms of the FreeType project
+ * license, LICENSE.TXT.  By continuing to use, modify, or distribute
+ * this file you indicate that you have read the license and
+ * understand and accept it fully.
+ *
+ */
 
 
-#include <ft2build.h>
-#include FT_INTERNAL_DEBUG_H
-#include FT_INTERNAL_STREAM_H
-#include FT_SERVICE_PFR_H
-#include FT_SERVICE_FONT_FORMAT_H
+#include <freetype/internal/ftdebug.h>
+#include <freetype/internal/ftstream.h>
+#include <freetype/internal/services/svpfr.h>
+#include <freetype/internal/services/svfntfmt.h>
 #include "pfrdrivr.h"
 #include "pfrobjs.h"
 
@@ -57,10 +56,10 @@
   }
 
 
- /*
-  *  PFR METRICS SERVICE
-  *
-  */
+  /*
+   * PFR METRICS SERVICE
+   *
+   */
 
   FT_CALLBACK_DEF( FT_Error )
   pfr_get_advance( FT_Face   pfrface,       /* PFR_Face */
@@ -139,16 +138,16 @@
   static
   const FT_Service_PfrMetricsRec  pfr_metrics_service_rec =
   {
-    pfr_get_metrics,
-    pfr_face_get_kerning,
-    pfr_get_advance
+    pfr_get_metrics,          /* get_metrics */
+    pfr_face_get_kerning,     /* get_kerning */
+    pfr_get_advance           /* get_advance */
   };
 
 
- /*
-  *  SERVICE LIST
-  *
-  */
+  /*
+   * SERVICE LIST
+   *
+   */
 
   static const FT_ServiceDescRec  pfr_services[] =
   {
@@ -181,31 +180,32 @@
       0x10000L,
       0x20000L,
 
-      NULL,
+      NULL,    /* module-specific interface */
 
-      0,                /* FT_Module_Constructor */
-      0,                /* FT_Module_Destructor  */
-      pfr_get_service
+      NULL,                     /* FT_Module_Constructor  module_init   */
+      NULL,                     /* FT_Module_Destructor   module_done   */
+      pfr_get_service           /* FT_Module_Requester    get_interface */
     },
 
     sizeof ( PFR_FaceRec ),
     sizeof ( PFR_SizeRec ),
     sizeof ( PFR_SlotRec ),
 
-    pfr_face_init,
-    pfr_face_done,
-    0,                  /* FT_Size_InitFunc */
-    0,                  /* FT_Size_DoneFunc */
-    pfr_slot_init,
-    pfr_slot_done,
+    pfr_face_init,              /* FT_Face_InitFunc  init_face */
+    pfr_face_done,              /* FT_Face_DoneFunc  done_face */
+    NULL,                       /* FT_Size_InitFunc  init_size */
+    NULL,                       /* FT_Size_DoneFunc  done_size */
+    pfr_slot_init,              /* FT_Slot_InitFunc  init_slot */
+    pfr_slot_done,              /* FT_Slot_DoneFunc  done_slot */
 
-    pfr_slot_load,
+    pfr_slot_load,              /* FT_Slot_LoadFunc  load_glyph */
 
-    pfr_get_kerning,
-    0,                  /* FT_Face_AttachFunc      */
-    0,                  /* FT_Face_GetAdvancesFunc */
-    0,                  /* FT_Size_RequestFunc     */
-    0,                  /* FT_Size_SelectFunc      */
+    pfr_get_kerning,            /* FT_Face_GetKerningFunc   get_kerning  */
+    NULL,                       /* FT_Face_AttachFunc       attach_file  */
+    NULL,                       /* FT_Face_GetAdvancesFunc  get_advances */
+
+    NULL,                       /* FT_Size_RequestFunc  request_size */
+    NULL,                       /* FT_Size_SelectFunc   select_size  */
   };
 
 

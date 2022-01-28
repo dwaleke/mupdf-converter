@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:css3t="http://www.w3.org/TR/css3-text/" xmlns:grddl="http://www.w3.org/2003/g/data-view#" xmlns:xhtml="http://www.w3.org/1999/xhtml" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xforms="http://www.w3.org/2002/xforms" xmlns:dom="http://www.w3.org/2001/xml-events" xmlns:script="urn:oasis:names:tc:opendocument:xmlns:script:1.0" xmlns:form="urn:oasis:names:tc:opendocument:xmlns:form:1.0" xmlns:math="http://www.w3.org/1998/Math/MathML" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" xmlns:field="urn:openoffice:names:experimental:ooo-ms-interop:xmlns:field:1.0" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" xmlns:officeooo="http://openoffice.org/2009/office" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:chart="urn:oasis:names:tc:opendocument:xmlns:chart:1.0" xmlns:tableooo="http://openoffice.org/2009/table" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:rpt="http://openoffice.org/2005/report" xmlns:dr3d="urn:oasis:names:tc:opendocument:xmlns:dr3d:1.0" xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:calcext="urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0" xmlns:oooc="http://openoffice.org/2004/calc" xmlns:drawooo="http://openoffice.org/2010/draw" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:ooo="http://openoffice.org/2004/office" xmlns:ooow="http://openoffice.org/2004/writer" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:formx="urn:openoffice:names:experimental:ooxml-odf-interop:xmlns:form:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" office:version="1.3"><office:scripts/><office:font-face-decls><style:font-face style:name="Liberation Serif" svg:font-family="&apos;Liberation Serif&apos;" style:font-family-generic="roman" style:font-pitch="variable"/><style:font-face style:name="Liberation Sans" svg:font-family="&apos;Liberation Sans&apos;" style:font-family-generic="swiss" style:font-pitch="variable"/><style:font-face style:name="Unifont" svg:font-family="Unifont" style:font-family-generic="system" style:font-pitch="variable"/></office:font-face-decls><office:automatic-styles><style:style style:name="T13" style:family="text"><style:text-properties style:font-name="Helvetica-Oblique" fo:font-size="10.00pt" fo:font-weight="normal" fo:font-style="italic" /></style:style><style:style style:name="T12" style:family="text"><style:text-properties style:font-name="Helvetica-Bold" fo:font-size="10.95pt" fo:font-weight="bold" fo:font-style="normal" /></style:style><style:style style:name="T11" style:family="text"><style:text-properties style:font-name="Helvetica" fo:font-size="10.00pt" fo:font-weight="normal" fo:font-style="normal" /></style:style><style:style style:name="gr1" style:family="graphic">
+<style:graphic-properties draw:stroke="none" svg:stroke-color="#000000" draw:fill="none" draw:fill-color="#ffffff" fo:min-height="1.9898in" style:run-through="foreground" style:wrap="run-through" style:number-wrapped-paragraphs="no-limit" style:vertical-pos="from-top" style:vertical-rel="paragraph" style:horizontal-pos="from-left" style:horizontal-rel="paragraph" />
+<style:paragraph-properties style:writing-mode="lr-tb"/>
+</style:style>
+<style:style style:name="fr1" style:family="graphic" style:parent-style-name="Graphics">
+<style:graphic-properties fo:margin-left="0in" fo:margin-right="0in" fo:margin-top="0in" fo:margin-bottom="0in" style:vertical-pos="top" style:vertical-rel="baseline" fo:background-color="transparent" draw:fill="none" draw:fill-color="#ffffff" fo:padding="0in" fo:border="none" style:mirror="none" fo:clip="rect(0in, 0in, 0in, 0in)" draw:luminance="0%" draw:contrast="0%" draw:red="0%" draw:green="0%" draw:blue="0%" draw:gamma="100%" draw:color-inversion="false" draw:image-opacity="100%" draw:color-mode="standard"/>
+</style:style>
+</office:automatic-styles><office:body><office:text><text:sequence-decls><text:sequence-decl text:display-outline-level="0" text:name="Illustration"/><text:sequence-decl text:display-outline-level="0" text:name="Table"/><text:sequence-decl text:display-outline-level="0" text:name="Text"/><text:sequence-decl text:display-outline-level="0" text:name="Drawing"/><text:sequence-decl text:display-outline-level="0" text:name="Figure"/></text:sequence-decls><text:p text:style-name="Standard"/>
+
+<text:p><text:span text:style-name="T11">ZLIB(3) ZLIB(3)</text:span></text:p>
+
+<text:p><text:span text:style-name="T12">NAME </text:span><text:span text:style-name="T11">zlib &#x2212; compression/decompression library</text:span></text:p>
+
+<text:p><text:span text:style-name="T12">SYNOPSIS </text:span><text:span text:style-name="T11">[see </text:span><text:span text:style-name="T13">zlib.h </text:span><text:span text:style-name="T11">for full description]</text:span></text:p>
+
+<text:p><text:span text:style-name="T12">DESCRIPTION </text:span><text:span text:style-name="T11">The </text:span><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">library is a general purpose data compression library. The code is thread safe, assuming that the standard library functions used are thread safe, such as memory allocation routines. It provides in-memory compression and decompression functions, including integrity checks of the uncompressed data. This version of the library supports only one compression method (deflation) but other algorithms may be added later with the same stream interface.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">Compression can be done in a single step if the buffers are large enough or can be done by repeated calls of the compression function. In the latter case, the application must provide more input and/or consume the output (providing more output space) before each call.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">The library also supports reading and writing files in </text:span><text:span text:style-name="T13">gzip</text:span><text:span text:style-name="T11">(1) (.gz) format with an interface similar to that of stdio.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">The library does not install any signal handler. The decoder checks the consistency of the compressed data, so the library should never crash even in the case of corrupted input.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">All functions of the compression library are documented in the file </text:span><text:span text:style-name="T13">zlib.h</text:span><text:span text:style-name="T11">. The distribution source includes examples of use of the library in the files </text:span><text:span text:style-name="T13">test/example.c </text:span><text:span text:style-name="T11">and </text:span><text:span text:style-name="T13">test/minigzip.c, </text:span><text:span text:style-name="T11">as well as other examples in the </text:span><text:span text:style-name="T13">examples/ </text:span><text:span text:style-name="T11">directory.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">Changes to this version are documented in the file </text:span><text:span text:style-name="T13">ChangeLog </text:span><text:span text:style-name="T11">that accompanies the source.</text:span></text:p>
+
+<text:p><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">is built in to many languages and operating systems, including but not limited to Java, Python, .NET, PHP, Perl, Ruby, Swift, and Go.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">An experimental package to read and write files in the .zip format, written on top of </text:span><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">by Gilles Vollant (info@winimage.com), is available at:</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">http://www.winimage.com/zLibDll/minizip.html and also in the </text:span><text:span text:style-name="T13">contrib/minizip </text:span><text:span text:style-name="T11">directory of the main </text:span><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">source distribution.</text:span></text:p>
+
+<text:p><text:span text:style-name="T12">SEE ALSO </text:span><text:span text:style-name="T11">The </text:span><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">web site can be found at:</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">http://zlib.net/</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">The data format used by the </text:span><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">library is described by RFC (Request for Comments) 1950 to 1952 in the files:</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">http://tools.ietf.org/html/rfc1950 (for the zlib header and trailer format) http://tools.ietf.org/html/rfc1951 (for the deflate compressed data format) http://tools.ietf.org/html/rfc1952 (for the gzip header and trailer format)</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">Mark Nelson wrote an article about </text:span><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">for the Jan. 1997 issue of Dr. Dobb&#x2019;s Journal; a copy of the article is available at:</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">http://marknelson.us/1997/01/01/zlib-engine/</text:span></text:p>
+
+<text:p><text:span text:style-name="T12">REPORTING PROBLEMS </text:span><text:span text:style-name="T11">Before reporting a problem, please check the </text:span><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">web site to verify that you have the latest version of </text:span><text:span text:style-name="T13">zlib</text:span><text:span text:style-name="T11">; otherwise, obtain the latest version and see if the problem still exists. Please read the </text:span><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">FAQ at:</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">http://zlib.net/zlib_faq.html</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">before asking for help. Send questions and/or comments to zlib@gzip.org, or (for the Windows DLL version) to Gilles Vollant (info@winimage.com).</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">15 Jan 2017 1</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">ZLIB(3) ZLIB(3)</text:span></text:p>
+
+<text:p><text:span text:style-name="T12">AUTHORS AND LICENSE </text:span><text:span text:style-name="T11">Version 1.2.11</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">Copyright (C) 1995-2017 Jean-loup Gailly and Mark Adler</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">This software is provided &#x2019;as-is&#x2019;, without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">Permission is granted to anyone to use this software for any purpose, including commercial applications, and to alter it and redistribute it freely, subject to the following restrictions:</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">1. The origin of this software must not be misrepresented; you must not claim that you wrote the original software. If you use this software in a product, an acknowledgment in the product documentation would be appreciated but is not required.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">2. Altered source versions must be plainly marked as such, and must not be misrepresented as being the original software.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">3. This notice may not be removed or altered from any source distribution.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">Jean-loup Gailly Mark Adler jloup@gzip.org madler@alumni.caltech.edu</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">The deflate format used by </text:span><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">was defined by Phil Katz. The deflate and </text:span><text:span text:style-name="T13">zlib </text:span><text:span text:style-name="T11">specifications were written by L. Peter Deutsch. Thanks to all the people who reported problems and suggested various improvements in </text:span><text:span text:style-name="T13">zlib</text:span><text:span text:style-name="T11">; who are too numerous to cite here.</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">UNIX manual page by R. P. C. Rodgers, U.S. National Library of Medicine (rodgers@nlm.nih.gov).</text:span></text:p>
+
+<text:p><text:span text:style-name="T11">15 Jan 2017 2</text:span></text:p></office:text></office:body></office:document-content>

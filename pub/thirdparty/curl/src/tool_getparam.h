@@ -7,11 +7,11 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2012, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2019, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at http://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.haxx.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -30,20 +30,28 @@ typedef enum {
   PARAM_REQUIRES_PARAMETER,
   PARAM_BAD_USE,
   PARAM_HELP_REQUESTED,
+  PARAM_MANUAL_REQUESTED,
+  PARAM_VERSION_INFO_REQUESTED,
+  PARAM_ENGINES_REQUESTED,
   PARAM_GOT_EXTRA_PARAMETER,
   PARAM_BAD_NUMERIC,
   PARAM_NEGATIVE_NUMERIC,
   PARAM_LIBCURL_DOESNT_SUPPORT,
+  PARAM_LIBCURL_UNSUPPORTED_PROTOCOL,
   PARAM_NO_MEM,
+  PARAM_NEXT_OPERATION,
+  PARAM_NO_PREFIX,
+  PARAM_NUMBER_TOO_LARGE,
+  PARAM_NO_NOT_BOOLEAN,
   PARAM_LAST
 } ParameterError;
 
-struct Configurable;
+struct GlobalConfig;
+struct OperationConfig;
 
-ParameterError getparameter(char *flag,
-                            char *nextarg,
-                            bool *usedarg,
-                            struct Configurable *config);
+ParameterError getparameter(const char *flag, char *nextarg, bool *usedarg,
+                            struct GlobalConfig *global,
+                            struct OperationConfig *operation);
 
 #ifdef UNITTESTS
 void parse_cert_parameter(const char *cert_parameter,
@@ -51,5 +59,7 @@ void parse_cert_parameter(const char *cert_parameter,
                           char **passphrase);
 #endif
 
-#endif /* HEADER_CURL_TOOL_GETPARAM_H */
+ParameterError parse_args(struct GlobalConfig *config, int argc,
+                          argv_item_t argv[]);
 
+#endif /* HEADER_CURL_TOOL_GETPARAM_H */

@@ -7,8 +7,8 @@ HTTP POST
 </info>
 #
 # Server-side
-<reply name="1">
-<data mode="text">
+<reply>
+<data>
 HTTP/1.1 200 OK
 Date: Thu, 09 Nov 2010 14:49:00 GMT
 Server: test-server/fake
@@ -38,14 +38,14 @@ lib578
 HTTP POST lower than MAX_INITIAL_POST_SIZE with progress callback
  </name>
  <command>
-http://%HOSTIP:%HTTPPORT/500 log/ip578
+http://%HOSTIP:%HTTPPORT/578 log/ip578
 </command>
 </client>
 
 #
 # Verify data after the test has been "shot"
 <verify>
-<file name="log/ip578" mode="text">
+<file name="log/ip578">
 PASSED, UL data matched data size
 </file>
 </verify>

@@ -1,4 +1,27 @@
-#include "mupdf/xps.h"
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
+#include "mupdf/fitz.h"
+#include "xps-imp.h"
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -20,31 +43,31 @@ static inline int unhex(int a)
 }
 
 int
-xps_count_font_encodings(fz_font *font)
+xps_count_font_encodings(fz_context *ctx, fz_font *font)
 {
-	FT_Face face = font->ft_face;
+	FT_Face face = fz_font_ft_face(ctx, font);
 	return face->num_charmaps;
 }
 
 void
-xps_identify_font_encoding(fz_font *font, int idx, int *pid, int *eid)
+xps_identify_font_encoding(fz_context *ctx, fz_font *font, int idx, int *pid, int *eid)
 {
-	FT_Face face = font->ft_face;
+	FT_Face face = fz_font_ft_face(ctx, font);
 	*pid = face->charmaps[idx]->platform_id;
 	*eid = face->charmaps[idx]->encoding_id;
 }
 
 void
-xps_select_font_encoding(fz_font *font, int idx)
+xps_select_font_encoding(fz_context *ctx, fz_font *font, int idx)
 {
-	FT_Face face = font->ft_face;
+	FT_Face face = fz_font_ft_face(ctx, font);
 	FT_Set_Charmap(face, face->charmaps[idx]);
 }
 
 int
-xps_encode_font_char(fz_font *font, int code)
+xps_encode_font_char(fz_context *ctx, fz_font *font, int code)
 {
-	FT_Face face = font->ft_face;
+	FT_Face face = fz_font_ft_face(ctx, font);
 	int gid = FT_Get_Char_Index(face, code);
 	if (gid == 0 && face->charmap && face->charmap->platform_id == 3 && face->charmap->encoding_id == 0)
 		gid = FT_Get_Char_Index(face, 0xF000 | code);
@@ -55,7 +78,7 @@ void
 xps_measure_font_glyph(fz_context *ctx, xps_document *doc, fz_font *font, int gid, xps_glyph_metrics *mtx)
 {
 	int mask = FT_LOAD_NO_SCALE | FT_LOAD_IGNORE_TRANSFORM;
-	FT_Face face = font->ft_face;
+	FT_Face face = fz_font_ft_face(ctx, font);
 	FT_Fixed hadv = 0, vadv = 0;
 
 	fz_lock(ctx, FZ_LOCK_FREETYPE);
@@ -63,9 +86,9 @@ xps_measure_font_glyph(fz_context *ctx, xps_document *doc, fz_font *font, int gi
 	FT_Get_Advance(face, gid, mask | FT_LOAD_VERTICAL_LAYOUT, &vadv);
 	fz_unlock(ctx, FZ_LOCK_FREETYPE);
 
-	mtx->hadv = hadv / (float)face->units_per_EM;
-	mtx->vadv = vadv / (float)face->units_per_EM;
-	mtx->vorg = face->ascender / (float) face->units_per_EM;
+	mtx->hadv = (float) hadv / face->units_per_EM;
+	mtx->vadv = (float) vadv / face->units_per_EM;
+	mtx->vorg = (float) face->ascender / face->units_per_EM;
 }
 
 static fz_font *
@@ -82,9 +105,23 @@ static void
 xps_insert_font(fz_context *ctx, xps_document *doc, char *name, fz_font *font)
 {
 	xps_font_cache *cache = fz_malloc_struct(ctx, xps_font_cache);
-	cache->name = fz_strdup(ctx, name);
-	cache->font = fz_keep_font(ctx, font);
-	cache->next = doc->font_table;
+	cache->font = NULL;
+	cache->name = NULL;
+
+	fz_try(ctx)
+	{
+		cache->font = fz_keep_font(ctx, font);
+		cache->name = fz_strdup(ctx, name);
+		cache->next = doc->font_table;
+	}
+	fz_catch(ctx)
+	{
+		fz_drop_font(ctx, cache->font);
+		fz_free(ctx, cache->name);
+		fz_free(ctx, cache);
+		fz_rethrow(ctx);
+	}
+
 	doc->font_table = cache;
 }
 
@@ -97,10 +134,13 @@ xps_deobfuscate_font_resource(fz_context *ctx, xps_document *doc, xps_part *part
 {
 	unsigned char buf[33];
 	unsigned char key[16];
+	unsigned char *data;
+	size_t size;
 	char *p;
 	int i;
 
-	if (part->size < 32)
+	size = fz_buffer_storage(ctx, part->data, &data);
+	if (size < 32)
 	{
 		fz_warn(ctx, "insufficient data for font deobfuscation");
 		return;
@@ -128,8 +168,8 @@ xps_deobfuscate_font_resource(fz_context *ctx, xps_document *doc, xps_part *part
 
 	for (i = 0; i < 16; i++)
 	{
-		part->data[i] ^= key[15-i];
-		part->data[i+16] ^= key[15-i];
+		data[i] ^= key[15-i];
+		data[i+16] ^= key[15-i];
 	}
 }
 
@@ -151,15 +191,15 @@ xps_select_best_font_encoding(fz_context *ctx, xps_document *doc, fz_font *font)
 
 	int i, k, n, pid, eid;
 
-	n = xps_count_font_encodings(font);
+	n = xps_count_font_encodings(ctx, font);
 	for (k = 0; xps_cmap_list[k].pid != -1; k++)
 	{
 		for (i = 0; i < n; i++)
 		{
-			xps_identify_font_encoding(font, i, &pid, &eid);
+			xps_identify_font_encoding(ctx, font, i, &pid, &eid);
 			if (pid == xps_cmap_list[k].pid && eid == xps_cmap_list[k].eid)
 			{
-				xps_select_font_encoding(font, i);
+				xps_select_font_encoding(ctx, font, i);
 				return;
 			}
 		}
@@ -210,8 +250,13 @@ xps_lookup_font(fz_context *ctx, xps_document *doc, char *base_uri, char *font_u
 		}
 		fz_catch(ctx)
 		{
-			fz_rethrow_if(ctx, FZ_ERROR_TRYLATER);
-			fz_warn(ctx, "cannot find font resource part '%s'", partname);
+			if (fz_caught(ctx) == FZ_ERROR_TRYLATER)
+			{
+				if (doc->cookie)
+					doc->cookie->incomplete = 1;
+			}
+			else
+				fz_warn(ctx, "cannot find font resource part '%s'", partname);
 			return NULL;
 		}
 
@@ -221,33 +266,34 @@ xps_lookup_font(fz_context *ctx, xps_document *doc, char *base_uri, char *font_u
 		if (strstr(part->name, ".ODTTF"))
 			xps_deobfuscate_font_resource(ctx, doc, part);
 
+		fz_var(font);
 		fz_try(ctx)
 		{
-			buf = fz_new_buffer_from_data(ctx, part->data, part->size);
-			/* part->data is now owned by buf */
-			part->data = NULL;
-			font = fz_new_font_from_buffer(ctx, NULL, buf, subfontid, 1);
+			font = fz_new_font_from_buffer(ctx, NULL, part->data, subfontid, 1);
+			xps_select_best_font_encoding(ctx, doc, font);
+			xps_insert_font(ctx, doc, fakename, font);
 		}
 		fz_always(ctx)
 		{
-			fz_drop_buffer(ctx, buf);
 			xps_drop_part(ctx, doc, part);
 		}
 		fz_catch(ctx)
 		{
-			fz_rethrow_if(ctx, FZ_ERROR_TRYLATER);
+			fz_drop_font(ctx, font);
 			fz_warn(ctx, "cannot load font resource '%s'", partname);
 			return NULL;
 		}
 
 		if (style_att)
 		{
-			font->ft_bold = !!strstr(style_att, "Bold");
-			font->ft_italic = !!strstr(style_att, "Italic");
+			fz_font_flags_t *flags = fz_font_flags(font);
+			int bold = !!strstr(style_att, "Bold");
+			int italic = !!strstr(style_att, "Italic");
+			flags->fake_bold = bold;
+			flags->is_bold = bold;
+			flags->fake_italic = italic;
+			flags->is_italic = italic;
 		}
-
-		xps_select_best_font_encoding(ctx, doc, font);
-		xps_insert_font(ctx, doc, fakename, font);
 	}
 	return font;
 }
@@ -284,23 +330,16 @@ xps_parse_digits(char *s, int *digit)
 	return s;
 }
 
-static inline int is_real_num_char(int c)
-{
-	return (c >= '0' && c <= '9') ||
-		c == 'e' || c == 'E' || c == '+' || c == '-' || c == '.';
-}
-
 static char *
-xps_parse_real_num(char *s, float *number)
+xps_parse_real_num(char *s, float *number, int *override)
 {
-	char buf[64];
-	char *p = buf;
-	while (is_real_num_char(*s))
-		*p++ = *s++;
-	*p = 0;
-	if (buf[0])
-		*number = fz_atof(buf);
-	return s;
+	char *tail;
+	float v;
+	v = fz_strtof(s, &tail);
+	*override = tail != s;
+	if (*override)
+		*number = v;
+	return tail;
 }
 
 static char *
@@ -324,23 +363,24 @@ xps_parse_glyph_index(char *s, int *glyph_index)
 }
 
 static char *
-xps_parse_glyph_metrics(char *s, float *advance, float *uofs, float *vofs)
+xps_parse_glyph_metrics(char *s, float *advance, float *uofs, float *vofs, int bidi_level)
 {
+	int override;
 	if (*s == ',')
-		s = xps_parse_real_num(s + 1, advance);
+	{
+		s = xps_parse_real_num(s + 1, advance, &override);
+		if (override && (bidi_level & 1))
+			*advance = -*advance;
+	}
 	if (*s == ',')
-		s = xps_parse_real_num(s + 1, uofs);
+		s = xps_parse_real_num(s + 1, uofs, &override);
 	if (*s == ',')
-		s = xps_parse_real_num(s + 1, vofs);
+		s = xps_parse_real_num(s + 1, vofs, &override);
 	return s;
 }
 
-/*
- * Parse unicode and indices strings and encode glyphs.
- * Calculate metrics for positioning.
- */
 fz_text *
-xps_parse_glyphs_imp(fz_context *ctx, xps_document *doc, const fz_matrix *ctm,
+xps_parse_glyphs_imp(fz_context *ctx, xps_document *doc, fz_matrix ctm,
 	fz_font *font, float size, float originx, float originy,
 	int is_sideways, int bidi_level,
 	char *indices, char *unicode)
@@ -348,12 +388,11 @@ xps_parse_glyphs_imp(fz_context *ctx, xps_document *doc, const fz_matrix *ctm,
 	xps_glyph_metrics mtx;
 	fz_text *text;
 	fz_matrix tm;
-	float e, f;
 	float x = originx;
 	float y = originy;
 	char *us = unicode;
 	char *is = indices;
-	int un = 0;
+	size_t un = 0;
 
 	if (!unicode && !indices)
 		fz_warn(ctx, "glyphs element with neither characters nor indices");
@@ -366,100 +405,108 @@ xps_parse_glyphs_imp(fz_context *ctx, xps_document *doc, const fz_matrix *ctm,
 	}
 
 	if (is_sideways)
-	{
-		fz_pre_scale(fz_rotate(&tm, 90), -size, size);
-	}
+		tm = fz_pre_scale(fz_rotate(90), -size, size);
 	else
-		fz_scale(&tm, size, -size);
+		tm = fz_scale(size, -size);
 
-	text = fz_new_text(ctx, font, &tm, is_sideways);
+	text = fz_new_text(ctx);
 
-	while ((us && un > 0) || (is && *is))
+	fz_try(ctx)
 	{
-		int char_code = '?';
-		int code_count = 1;
-		int glyph_count = 1;
-
-		if (is && *is)
+		while ((us && un > 0) || (is && *is))
 		{
-			is = xps_parse_cluster_mapping(is, &code_count, &glyph_count);
-		}
-
-		if (code_count < 1)
-			code_count = 1;
-		if (glyph_count < 1)
-			glyph_count = 1;
-
-		/* TODO: add code chars with cluster mappings for text extraction */
-
-		while (code_count--)
-		{
-			if (us && un > 0)
-			{
-				int t = fz_chartorune(&char_code, us);
-				us += t; un -= t;
-			}
-		}
-
-		while (glyph_count--)
-		{
-			int glyph_index = -1;
-			float u_offset = 0;
-			float v_offset = 0;
-			float advance;
-
-			if (is && *is)
-				is = xps_parse_glyph_index(is, &glyph_index);
-
-			if (glyph_index == -1)
-				glyph_index = xps_encode_font_char(font, char_code);
-
-			xps_measure_font_glyph(ctx, doc, font, glyph_index, &mtx);
-			if (is_sideways)
-				advance = mtx.vadv * 100;
-			else if (bidi_level & 1)
-				advance = -mtx.hadv * 100;
-			else
-				advance = mtx.hadv * 100;
-
-			if (font->ft_bold)
-				advance *= 1.02f;
+			int char_code = FZ_REPLACEMENT_CHARACTER;
+			int code_count = 1;
+			int glyph_count = 1;
 
 			if (is && *is)
 			{
-				is = xps_parse_glyph_metrics(is, &advance, &u_offset, &v_offset);
-				if (*is == ';')
-					is ++;
+				is = xps_parse_cluster_mapping(is, &code_count, &glyph_count);
 			}
 
-			if (bidi_level & 1)
-				u_offset = -mtx.hadv * 100 - u_offset;
+			if (code_count < 1)
+				code_count = 1;
+			if (glyph_count < 1)
+				glyph_count = 1;
 
-			u_offset = u_offset * 0.01f * size;
-			v_offset = v_offset * 0.01f * size;
+			/* TODO: add code chars with cluster mappings for text extraction */
 
-			if (is_sideways)
+			while (code_count--)
 			{
-				e = x + u_offset + (mtx.vorg * size);
-				f = y - v_offset + (mtx.hadv * 0.5f * size);
+				if (us && un > 0)
+				{
+					int t = fz_chartorune(&char_code, us);
+					us += t; un -= t;
+				}
 			}
-			else
+
+			while (glyph_count--)
 			{
-				e = x + u_offset;
-				f = y - v_offset;
+				int glyph_index = -1;
+				float u_offset = 0;
+				float v_offset = 0;
+				float advance;
+				int dir;
+
+				if (is && *is)
+					is = xps_parse_glyph_index(is, &glyph_index);
+
+				if (glyph_index == -1)
+					glyph_index = xps_encode_font_char(ctx, font, char_code);
+
+				xps_measure_font_glyph(ctx, doc, font, glyph_index, &mtx);
+				if (is_sideways)
+					advance = mtx.vadv * 100;
+				else if (bidi_level & 1)
+					advance = -mtx.hadv * 100;
+				else
+					advance = mtx.hadv * 100;
+
+				if (fz_font_flags(font)->fake_bold)
+					advance *= 1.02f;
+
+				if (is && *is)
+				{
+					is = xps_parse_glyph_metrics(is, &advance, &u_offset, &v_offset, bidi_level);
+					if (*is == ';')
+						is ++;
+				}
+
+				if (bidi_level & 1)
+					u_offset = -mtx.hadv * 100 - u_offset;
+
+				u_offset = u_offset * 0.01f * size;
+				v_offset = v_offset * 0.01f * size;
+
+				if (is_sideways)
+				{
+					tm.e = x + u_offset + (mtx.vorg * size);
+					tm.f = y - v_offset + (mtx.hadv * 0.5f * size);
+				}
+				else
+				{
+					tm.e = x + u_offset;
+					tm.f = y - v_offset;
+				}
+
+				dir = bidi_level & 1 ? FZ_BIDI_RTL : FZ_BIDI_LTR;
+				fz_show_glyph(ctx, text, font, tm, glyph_index, char_code, is_sideways, bidi_level, dir, FZ_LANG_UNSET);
+
+				x += advance * 0.01f * size;
 			}
-
-			fz_add_text(ctx, text, glyph_index, char_code, e, f);
-
-			x += advance * 0.01f * size;
 		}
+	}
+	fz_catch(ctx)
+	{
+		fz_drop_text(ctx, text);
+		fz_rethrow(ctx);
 	}
 
 	return text;
 }
 
 void
-xps_parse_glyphs(fz_context *ctx, xps_document *doc, const fz_matrix *ctm,
+xps_parse_glyphs(fz_context *ctx, xps_document *doc, fz_matrix ctm,
 		char *base_uri, xps_resource *dict, fz_xml *root)
 {
 	fz_device *dev = doc->dev;
@@ -499,8 +546,6 @@ xps_parse_glyphs(fz_context *ctx, xps_document *doc, const fz_matrix *ctm,
 
 	fz_text *text;
 	fz_rect area;
-
-	fz_matrix local_ctm;
 
 	/*
 	 * Extract attributes and extended attributes.
@@ -565,65 +610,70 @@ xps_parse_glyphs(fz_context *ctx, xps_document *doc, const fz_matrix *ctm,
 
 	font = xps_lookup_font(ctx, doc, base_uri, font_uri_att, style_att);
 	if (!font)
-		return; /* bail if we can't find the font */
+		font = fz_new_base14_font(ctx, "Times-Roman");
 
-	/*
-	 * Set up graphics state.
-	 */
-
-	xps_parse_transform(ctx, doc, transform_att, transform_tag, &local_ctm, ctm);
-
-	if (clip_att || clip_tag)
-		xps_clip(ctx, doc, &local_ctm, dict, clip_att, clip_tag);
-
-	font_size = fz_atof(font_size_att);
-
-	text = xps_parse_glyphs_imp(ctx, doc, &local_ctm, font, font_size,
-			fz_atof(origin_x_att), fz_atof(origin_y_att),
-			is_sideways, bidi_level, indices_att, unicode_att);
-
-	fz_bound_text(ctx, text, NULL, &local_ctm, &area);
-
-	xps_begin_opacity(ctx, doc, &local_ctm, &area, opacity_mask_uri, dict, opacity_att, opacity_mask_tag);
-
-	/* If it's a solid color brush fill/stroke do a simple fill */
-
-	if (fill_tag && !strcmp(fz_xml_tag(fill_tag), "SolidColorBrush"))
+	fz_try(ctx)
 	{
-		fill_opacity_att = fz_xml_att(fill_tag, "Opacity");
-		fill_att = fz_xml_att(fill_tag, "Color");
-		fill_tag = NULL;
-	}
+		/*
+		 * Set up graphics state.
+		 */
 
-	if (fill_att)
+		ctm = xps_parse_transform(ctx, doc, transform_att, transform_tag, ctm);
+
+		if (clip_att || clip_tag)
+			xps_clip(ctx, doc, ctm, dict, clip_att, clip_tag);
+
+		font_size = fz_atof(font_size_att);
+
+		text = xps_parse_glyphs_imp(ctx, doc, ctm, font, font_size,
+				fz_atof(origin_x_att), fz_atof(origin_y_att),
+				is_sideways, bidi_level, indices_att, unicode_att);
+
+		area = fz_bound_text(ctx, text, NULL, ctm);
+
+		xps_begin_opacity(ctx, doc, ctm, area, opacity_mask_uri, dict, opacity_att, opacity_mask_tag);
+
+		/* If it's a solid color brush fill/stroke do a simple fill */
+
+		if (fz_xml_is_tag(fill_tag, "SolidColorBrush"))
+		{
+			fill_opacity_att = fz_xml_att(fill_tag, "Opacity");
+			fill_att = fz_xml_att(fill_tag, "Color");
+			fill_tag = NULL;
+		}
+
+		if (fill_att)
+		{
+			float samples[FZ_MAX_COLORS];
+			fz_colorspace *colorspace;
+
+			xps_parse_color(ctx, doc, base_uri, fill_att, &colorspace, samples);
+			if (fill_opacity_att)
+				samples[0] *= fz_atof(fill_opacity_att);
+			xps_set_color(ctx, doc, colorspace, samples);
+
+			fz_fill_text(ctx, dev, text, ctm, doc->colorspace, doc->color, doc->alpha, fz_default_color_params);
+		}
+
+		/* If it's a complex brush, use the charpath as a clip mask */
+
+		if (fill_tag)
+		{
+			fz_clip_text(ctx, dev, text, ctm, area);
+			xps_parse_brush(ctx, doc, ctm, area, fill_uri, dict, fill_tag);
+			fz_pop_clip(ctx, dev);
+		}
+
+		xps_end_opacity(ctx, doc, opacity_mask_uri, dict, opacity_att, opacity_mask_tag);
+
+		if (clip_att || clip_tag)
+			fz_pop_clip(ctx, dev);
+	}
+	fz_always(ctx)
 	{
-		float samples[FZ_MAX_COLORS];
-		fz_colorspace *colorspace;
-
-		xps_parse_color(ctx, doc, base_uri, fill_att, &colorspace, samples);
-		if (fill_opacity_att)
-			samples[0] *= fz_atof(fill_opacity_att);
-		xps_set_color(ctx, doc, colorspace, samples);
-
-		fz_fill_text(ctx, dev, text, &local_ctm,
-			doc->colorspace, doc->color, doc->alpha);
+		fz_drop_text(ctx, text);
+		fz_drop_font(ctx, font);
 	}
-
-	/* If it's a complex brush, use the charpath as a clip mask */
-
-	if (fill_tag)
-	{
-		fz_clip_text(ctx, dev, text, &local_ctm, 0);
-		xps_parse_brush(ctx, doc, &local_ctm, &area, fill_uri, dict, fill_tag);
-		fz_pop_clip(ctx, dev);
-	}
-
-	xps_end_opacity(ctx, doc, opacity_mask_uri, dict, opacity_att, opacity_mask_tag);
-
-	fz_drop_text(ctx, text);
-
-	if (clip_att || clip_tag)
-		fz_pop_clip(ctx, dev);
-
-	fz_drop_font(ctx, font);
+	fz_catch(ctx)
+		fz_rethrow(ctx);
 }

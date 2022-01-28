@@ -4,6 +4,7 @@
 HTTP
 pipelining
 multi
+flaky
 </keywords>
 </info>
 
@@ -32,6 +33,9 @@ Handle 6 Completed with status 0
 <server>
 http-pipe
 </server>
+<features>
+http
+</features>
 <tool>
 lib1900
 </tool>
@@ -39,9 +43,9 @@ lib1900
 HTTP GET using pipelining, blacklisted site
  </name>
  <command>
-http://%HOSTIP:%HTTPPIPEPORT/
+http://%HOSTIP:%HTTPPIPEPORT/ log/urls1901.txt
 </command>
-<file name="log/urls.txt">
+<file name="log/urls1901.txt">
 blacklist_site 127.0.0.1:%HTTPPIPEPORT
 0 1k.txt
 1000 100k.txt
@@ -50,6 +54,7 @@ blacklist_site 127.0.0.1:%HTTPPIPEPORT
 0 1k.txt
 0 1k.txt
 0 1k.txt
+</file>
 </client>
 
 # Verify data after the test has been "shot"

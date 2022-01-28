@@ -5,11 +5,11 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2012, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2019, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at http://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.haxx.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -20,10 +20,9 @@
  *
  ***************************************************************************/
 #include "tool_setup.h"
-
-#define _MPRINTF_REPLACE /* we want curl-functions instead of native ones */
-#include <curl/mprintf.h>
-
+#define ENABLE_CURLX_PRINTF
+/* use our own printf() functions */
+#include "curlx.h"
 #include "tool_cfgable.h"
 #include "tool_writeout.h"
 
@@ -53,11 +52,16 @@ typedef enum {
   VAR_FTP_ENTRY_PATH,
   VAR_REDIRECT_URL,
   VAR_SSL_VERIFY_RESULT,
+  VAR_PROXY_SSL_VERIFY_RESULT,
   VAR_EFFECTIVE_FILENAME,
   VAR_PRIMARY_IP,
   VAR_PRIMARY_PORT,
   VAR_LOCAL_IP,
   VAR_LOCAL_PORT,
+  VAR_HTTP_VERSION,
+  VAR_SCHEME,
+  VAR_STDOUT,
+  VAR_STDERR,
   VAR_NUM_OF_VARS /* must be the last */
 } replaceid;
 
@@ -91,11 +95,16 @@ static const struct variable replacements[]={
   {"ftp_entry_path", VAR_FTP_ENTRY_PATH},
   {"redirect_url", VAR_REDIRECT_URL},
   {"ssl_verify_result", VAR_SSL_VERIFY_RESULT},
+  {"proxy_ssl_verify_result", VAR_PROXY_SSL_VERIFY_RESULT},
   {"filename_effective", VAR_EFFECTIVE_FILENAME},
   {"remote_ip", VAR_PRIMARY_IP},
   {"remote_port", VAR_PRIMARY_PORT},
   {"local_ip", VAR_LOCAL_IP},
   {"local_port", VAR_LOCAL_PORT},
+  {"http_version", VAR_HTTP_VERSION},
+  {"scheme", VAR_SCHEME},
+  {"stdout", VAR_STDOUT},
+  {"stderr", VAR_STDERR},
   {NULL, VAR_NONE}
 };
 
@@ -103,12 +112,12 @@ void ourWriteOut(CURL *curl, struct OutStruct *outs, const char *writeinfo)
 {
   FILE *stream = stdout;
   const char *ptr = writeinfo;
-  char *stringp;
+  char *stringp = NULL;
   long longinfo;
   double doubleinfo;
 
   while(ptr && *ptr) {
-    if('%' == *ptr) {
+    if('%' == *ptr && ptr[1]) {
       if('%' == ptr[1]) {
         /* an escaped %-letter */
         fputc('%', stream);
@@ -117,11 +126,16 @@ void ourWriteOut(CURL *curl, struct OutStruct *outs, const char *writeinfo)
       else {
         /* this is meant as a variable to output */
         char *end;
-        char keepit;
-        int i;
-        if(('{' == ptr[1]) && ((end = strchr(ptr, '}')) != NULL)) {
+        if('{' == ptr[1]) {
+          char keepit;
+          int i;
           bool match = FALSE;
+          end = strchr(ptr, '}');
           ptr += 2; /* pass the % and the { */
+          if(!end) {
+            fputs("%{", stream);
+            continue;
+          }
           keepit = *end;
           *end = 0; /* zero terminate */
           for(i = 0; replacements[i].name; i++) {
@@ -169,41 +183,41 @@ void ourWriteOut(CURL *curl, struct OutStruct *outs, const char *writeinfo)
                 if(CURLE_OK ==
                    curl_easy_getinfo(curl, CURLINFO_REDIRECT_TIME,
                                      &doubleinfo))
-                  fprintf(stream, "%.3f", doubleinfo);
+                  fprintf(stream, "%.6f", doubleinfo);
                 break;
               case VAR_TOTAL_TIME:
                 if(CURLE_OK ==
                    curl_easy_getinfo(curl, CURLINFO_TOTAL_TIME, &doubleinfo))
-                  fprintf(stream, "%.3f", doubleinfo);
+                  fprintf(stream, "%.6f", doubleinfo);
                 break;
               case VAR_NAMELOOKUP_TIME:
                 if(CURLE_OK ==
                    curl_easy_getinfo(curl, CURLINFO_NAMELOOKUP_TIME,
                                      &doubleinfo))
-                  fprintf(stream, "%.3f", doubleinfo);
+                  fprintf(stream, "%.6f", doubleinfo);
                 break;
               case VAR_CONNECT_TIME:
                 if(CURLE_OK ==
                    curl_easy_getinfo(curl, CURLINFO_CONNECT_TIME, &doubleinfo))
-                  fprintf(stream, "%.3f", doubleinfo);
+                  fprintf(stream, "%.6f", doubleinfo);
                 break;
               case VAR_APPCONNECT_TIME:
                 if(CURLE_OK ==
                    curl_easy_getinfo(curl, CURLINFO_APPCONNECT_TIME,
                                      &doubleinfo))
-                  fprintf(stream, "%.3f", doubleinfo);
+                  fprintf(stream, "%.6f", doubleinfo);
                 break;
               case VAR_PRETRANSFER_TIME:
                 if(CURLE_OK ==
                    curl_easy_getinfo(curl, CURLINFO_PRETRANSFER_TIME,
                                      &doubleinfo))
-                  fprintf(stream, "%.3f", doubleinfo);
+                  fprintf(stream, "%.6f", doubleinfo);
                 break;
               case VAR_STARTTRANSFER_TIME:
                 if(CURLE_OK ==
                    curl_easy_getinfo(curl, CURLINFO_STARTTRANSFER_TIME,
                                      &doubleinfo))
-                  fprintf(stream, "%.3f", doubleinfo);
+                  fprintf(stream, "%.6f", doubleinfo);
                 break;
               case VAR_SIZE_UPLOAD:
                 if(CURLE_OK ==
@@ -251,6 +265,12 @@ void ourWriteOut(CURL *curl, struct OutStruct *outs, const char *writeinfo)
                                      &longinfo))
                   fprintf(stream, "%ld", longinfo);
                 break;
+              case VAR_PROXY_SSL_VERIFY_RESULT:
+                if(CURLE_OK ==
+                   curl_easy_getinfo(curl, CURLINFO_PROXY_SSL_VERIFYRESULT,
+                                     &longinfo))
+                  fprintf(stream, "%ld", longinfo);
+                break;
               case VAR_EFFECTIVE_FILENAME:
                 if(outs->filename)
                   fprintf(stream, "%s", outs->filename);
@@ -279,6 +299,41 @@ void ourWriteOut(CURL *curl, struct OutStruct *outs, const char *writeinfo)
                                      &longinfo))
                   fprintf(stream, "%ld", longinfo);
                 break;
+              case VAR_HTTP_VERSION:
+                if(CURLE_OK ==
+                   curl_easy_getinfo(curl, CURLINFO_HTTP_VERSION,
+                                     &longinfo)) {
+                  const char *version = "0";
+                  switch(longinfo) {
+                  case CURL_HTTP_VERSION_1_0:
+                    version = "1.0";
+                    break;
+                  case CURL_HTTP_VERSION_1_1:
+                    version = "1.1";
+                    break;
+                  case CURL_HTTP_VERSION_2_0:
+                    version = "2";
+                    break;
+                  case CURL_HTTP_VERSION_3:
+                    version = "3";
+                    break;
+                  }
+
+                  fprintf(stream, version);
+                }
+                break;
+              case VAR_SCHEME:
+                if(CURLE_OK ==
+                   curl_easy_getinfo(curl, CURLINFO_SCHEME,
+                                     &stringp))
+                  fprintf(stream, "%s", stringp);
+                break;
+              case VAR_STDOUT:
+                stream = stdout;
+                break;
+              case VAR_STDERR:
+                stream = stderr;
+                break;
               default:
                 break;
               }
@@ -299,7 +354,7 @@ void ourWriteOut(CURL *curl, struct OutStruct *outs, const char *writeinfo)
         }
       }
     }
-    else if('\\' == *ptr) {
+    else if('\\' == *ptr && ptr[1]) {
       switch(ptr[1]) {
       case 'r':
         fputc('\r', stream);

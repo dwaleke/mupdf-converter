@@ -1,143 +1,33 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #include "mupdf/fitz.h"
 #include "draw-imp.h"
 
-#define BBOX_MIN -(1<<20)
-#define BBOX_MAX (1<<20)
-
-/* divide and floor towards -inf */
-static inline int fz_idiv(int a, int b)
-{
-	return a < 0 ? (a - b + 1) / b : a / b;
-}
-
-/* If AA_BITS is defined, then we assume constant N bits of antialiasing. We
- * will attempt to provide at least that number of bits of accuracy in the
- * antialiasing (to a maximum of 8). If it is defined to be 0 then no
- * antialiasing is done. If it is undefined to we will leave the antialiasing
- * accuracy as a run time choice.
- */
-struct fz_aa_context_s
-{
-	int hscale;
-	int vscale;
-	int scale;
-	int bits;
-};
-
-void fz_new_aa_context(fz_context *ctx)
-{
-#ifndef AA_BITS
-	ctx->aa = fz_malloc_struct(ctx, fz_aa_context);
-	ctx->aa->hscale = 17;
-	ctx->aa->vscale = 15;
-	ctx->aa->scale = 256;
-	ctx->aa->bits = 8;
-
-#define fz_aa_hscale ((ctxaa)->hscale)
-#define fz_aa_vscale ((ctxaa)->vscale)
-#define fz_aa_scale ((ctxaa)->scale)
-#define fz_aa_bits ((ctxaa)->bits)
-#define AA_SCALE(x) ((x * fz_aa_scale) >> 8)
-
-#endif
-}
-
-void fz_copy_aa_context(fz_context *dst, fz_context *src)
-{
-	if (dst && dst->aa && src && src->aa)
-		memcpy(dst->aa, src->aa, sizeof(*src->aa));
-}
-
-void fz_drop_aa_context(fz_context *ctx)
-{
-#ifndef AA_BITS
-	fz_free(ctx, ctx->aa);
-	ctx->aa = NULL;
-#endif
-}
-
-#ifdef AA_BITS
-
-#if AA_BITS > 6
-#define AA_SCALE(x) (x)
-#define fz_aa_hscale 17
-#define fz_aa_vscale 15
-#define fz_aa_bits 8
-
-#elif AA_BITS > 4
-#define AA_SCALE(x) ((x * 255) >> 6)
-#define fz_aa_hscale 8
-#define fz_aa_vscale 8
-#define fz_aa_bits 6
-
-#elif AA_BITS > 2
-#define AA_SCALE(x) (x * 17)
-#define fz_aa_hscale 5
-#define fz_aa_vscale 3
-#define fz_aa_bits 4
-
-#elif AA_BITS > 0
-#define AA_SCALE(x) ((x * 255) >> 2)
-#define fz_aa_hscale 2
-#define fz_aa_vscale 2
-#define fz_aa_bits 2
-
-#else
-#define AA_SCALE(x) (x * 255)
-#define fz_aa_hscale 1
-#define fz_aa_vscale 1
-#define fz_aa_bits 0
-
-#endif
-#endif
-
-int
-fz_aa_level(fz_context *ctx)
-{
-	fz_aa_context *ctxaa = ctx->aa;
-	return fz_aa_bits;
-}
-
-void
-fz_set_aa_level(fz_context *ctx, int level)
-{
-	fz_aa_context *ctxaa = ctx->aa;
-#ifdef AA_BITS
-	fz_warn(ctx, "anti-aliasing was compiled with a fixed precision of %d bits", fz_aa_bits);
-#else
-	if (level > 6)
-	{
-		fz_aa_hscale = 17;
-		fz_aa_vscale = 15;
-		fz_aa_bits = 8;
-	}
-	else if (level > 4)
-	{
-		fz_aa_hscale = 8;
-		fz_aa_vscale = 8;
-		fz_aa_bits = 6;
-	}
-	else if (level > 2)
-	{
-		fz_aa_hscale = 5;
-		fz_aa_vscale = 3;
-		fz_aa_bits = 4;
-	}
-	else if (level > 0)
-	{
-		fz_aa_hscale = 2;
-		fz_aa_vscale = 2;
-		fz_aa_bits = 2;
-	}
-	else
-	{
-		fz_aa_hscale = 1;
-		fz_aa_vscale = 1;
-		fz_aa_bits = 0;
-	}
-	fz_aa_scale = 0xFF00 / (fz_aa_hscale * fz_aa_vscale);
-#endif
-}
+#include <assert.h>
+#include <limits.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
 
 /*
  * Global Edge List -- list of straight path segments for scan conversion
@@ -147,141 +37,48 @@ fz_set_aa_level(fz_context *ctx, int level)
  * See Mike Abrash -- Graphics Programming Black Book (notably chapter 40)
  */
 
-typedef struct fz_edge_s fz_edge;
-
-struct fz_edge_s
+typedef struct fz_edge_s
 {
 	int x, e, h, y;
 	int adj_up, adj_down;
 	int xmove;
 	int xdir, ydir; /* -1 or +1 */
-};
+} fz_edge;
 
-struct fz_gel_s
+typedef struct fz_gel_s
 {
-	fz_rect clip;
-	fz_irect bbox;
+	fz_rasterizer super;
 	int cap, len;
 	fz_edge *edges;
 	int acap, alen;
 	fz_edge **active;
-};
+	int bcap;
+	unsigned char *alphas;
+	int *deltas;
+} fz_gel;
 
-#ifdef DUMP_GELS
-static void
-fz_dump_gel(fz_gel *gel)
+static int
+fz_reset_gel(fz_context *ctx, fz_rasterizer *rast)
 {
-	int i;
-
-	printf("%d edges\n", gel->len);
-	for (i = 0; i < gel->len; i++)
-	{
-		fz_edge *e = &gel->edges[i];
-		if (e->ydir > 0)
-			printf("%d %d -> %d %d\n", e->x, e->y, e->x + e->h * e->xmove + e->xdir * e->h * e->adj_up / e->adj_down, e->y + e->h);
-		else
-			printf("%d %d -> %d %d\n", e->x + e->h * e->xmove + e->xdir * e->h * e->adj_up / e->adj_down, e->y + e->h, e->x, e->y);
-	}
-}
-#endif
-
-fz_gel *
-fz_new_gel(fz_context *ctx)
-{
-	fz_gel *gel;
-
-	gel = fz_malloc_struct(ctx, fz_gel);
-	fz_try(ctx)
-	{
-		gel->edges = NULL;
-		gel->cap = 512;
-		gel->len = 0;
-		gel->edges = fz_malloc_array(ctx, gel->cap, sizeof(fz_edge));
-
-		gel->clip.x0 = gel->clip.y0 = BBOX_MIN;
-		gel->clip.x1 = gel->clip.y1 = BBOX_MAX;
-
-		gel->bbox.x0 = gel->bbox.y0 = BBOX_MAX;
-		gel->bbox.x1 = gel->bbox.y1 = BBOX_MIN;
-
-		gel->acap = 64;
-		gel->alen = 0;
-		gel->active = fz_malloc_array(ctx, gel->acap, sizeof(fz_edge*));
-	}
-	fz_catch(ctx)
-	{
-		if (gel)
-			fz_free(ctx, gel->edges);
-		fz_free(ctx, gel);
-		fz_rethrow(ctx);
-	}
-
-	return gel;
-}
-
-void
-fz_reset_gel(fz_context *ctx, fz_gel *gel, const fz_irect *clip)
-{
-	fz_aa_context *ctxaa = ctx->aa;
-
-	if (fz_is_infinite_irect(clip))
-	{
-		gel->clip.x0 = gel->clip.y0 = BBOX_MIN;
-		gel->clip.x1 = gel->clip.y1 = BBOX_MAX;
-	}
-	else {
-		gel->clip.x0 = clip->x0 * fz_aa_hscale;
-		gel->clip.x1 = clip->x1 * fz_aa_hscale;
-		gel->clip.y0 = clip->y0 * fz_aa_vscale;
-		gel->clip.y1 = clip->y1 * fz_aa_vscale;
-	}
-
-	gel->bbox.x0 = gel->bbox.y0 = BBOX_MAX;
-	gel->bbox.x1 = gel->bbox.y1 = BBOX_MIN;
+	fz_gel *gel = (fz_gel *)rast;
 
 	gel->len = 0;
 	gel->alen = 0;
+
+	return 0;
 }
 
-void
-fz_drop_gel(fz_context *ctx, fz_gel *gel)
+static void
+fz_drop_gel(fz_context *ctx, fz_rasterizer *rast)
 {
+	fz_gel *gel = (fz_gel *)rast;
 	if (gel == NULL)
 		return;
 	fz_free(ctx, gel->active);
 	fz_free(ctx, gel->edges);
+	fz_free(ctx, gel->alphas);
+	fz_free(ctx, gel->deltas);
 	fz_free(ctx, gel);
-}
-
-fz_irect *
-fz_bound_gel(fz_context *ctx, const fz_gel *gel, fz_irect *bbox)
-{
-	fz_aa_context *ctxaa = ctx->aa;
-	if (gel->len == 0)
-	{
-		*bbox = fz_empty_irect;
-	}
-	else
-	{
-		bbox->x0 = fz_idiv(gel->bbox.x0, fz_aa_hscale);
-		bbox->y0 = fz_idiv(gel->bbox.y0, fz_aa_vscale);
-		bbox->x1 = fz_idiv(gel->bbox.x1, fz_aa_hscale) + 1;
-		bbox->y1 = fz_idiv(gel->bbox.y1, fz_aa_vscale) + 1;
-	}
-	return bbox;
-}
-
-fz_rect *
-fz_gel_scissor(fz_context *ctx, const fz_gel *gel, fz_rect *r)
-{
-	fz_aa_context *ctxaa = ctx->aa;
-
-	r->x0 = gel->clip.x0 / fz_aa_hscale;
-	r->x1 = gel->clip.x1 / fz_aa_vscale;
-	r->y0 = gel->clip.y0 / fz_aa_hscale;
-	r->y1 = gel->clip.y1 / fz_aa_vscale;
-
-	return r;
 }
 
 enum { INSIDE, OUTSIDE, LEAVE, ENTER };
@@ -314,8 +111,9 @@ clip_lerp_x(int val, int m, int x0, int y0, int x1, int y1, int *out)
 }
 
 static void
-fz_insert_gel_raw(fz_context *ctx, fz_gel *gel, int x0, int y0, int x1, int y1)
+fz_insert_gel_raw(fz_context *ctx, fz_rasterizer *ras, int x0, int y0, int x1, int y1)
 {
+	fz_gel *gel = (fz_gel *)ras;
 	fz_edge *edge;
 	int dx, dy;
 	int winding;
@@ -333,17 +131,17 @@ fz_insert_gel_raw(fz_context *ctx, fz_gel *gel, int x0, int y0, int x1, int y1)
 	else
 		winding = 1;
 
-	if (x0 < gel->bbox.x0) gel->bbox.x0 = x0;
-	if (x0 > gel->bbox.x1) gel->bbox.x1 = x0;
-	if (x1 < gel->bbox.x0) gel->bbox.x0 = x1;
-	if (x1 > gel->bbox.x1) gel->bbox.x1 = x1;
+	if (x0 < gel->super.bbox.x0) gel->super.bbox.x0 = x0;
+	if (x0 > gel->super.bbox.x1) gel->super.bbox.x1 = x0;
+	if (x1 < gel->super.bbox.x0) gel->super.bbox.x0 = x1;
+	if (x1 > gel->super.bbox.x1) gel->super.bbox.x1 = x1;
 
-	if (y0 < gel->bbox.y0) gel->bbox.y0 = y0;
-	if (y1 > gel->bbox.y1) gel->bbox.y1 = y1;
+	if (y0 < gel->super.bbox.y0) gel->super.bbox.y0 = y0;
+	if (y1 > gel->super.bbox.y1) gel->super.bbox.y1 = y1;
 
 	if (gel->len + 1 == gel->cap) {
 		int new_cap = gel->cap * 2;
-		gel->edges = fz_resize_array(ctx, gel->edges, new_cap, sizeof(fz_edge));
+		gel->edges = fz_realloc_array(ctx, gel->edges, new_cap, fz_edge);
 		gel->cap = new_cap;
 	}
 
@@ -379,113 +177,115 @@ fz_insert_gel_raw(fz_context *ctx, fz_gel *gel, int x0, int y0, int x1, int y1)
 	}
 }
 
-void
-fz_insert_gel(fz_context *ctx, fz_gel *gel, float fx0, float fy0, float fx1, float fy1)
+static void
+fz_insert_gel(fz_context *ctx, fz_rasterizer *ras, float fx0, float fy0, float fx1, float fy1, int rev)
 {
 	int x0, y0, x1, y1;
 	int d, v;
-	fz_aa_context *ctxaa = ctx->aa;
+	const int hscale = fz_rasterizer_aa_hscale(ras);
+	const int vscale = fz_rasterizer_aa_vscale(ras);
 
-	fx0 = floorf(fx0 * fz_aa_hscale);
-	fx1 = floorf(fx1 * fz_aa_hscale);
-	fy0 = floorf(fy0 * fz_aa_vscale);
-	fy1 = floorf(fy1 * fz_aa_vscale);
+	fx0 = floorf(fx0 * hscale);
+	fx1 = floorf(fx1 * hscale);
+	fy0 = floorf(fy0 * vscale);
+	fy1 = floorf(fy1 * vscale);
 
 	/* Call fz_clamp so that clamping is done in the float domain, THEN
 	 * cast down to an int. Calling fz_clampi causes problems due to the
 	 * implicit cast down from float to int of the first argument
 	 * over/underflowing and flipping sign at extreme values. */
-	x0 = (int)fz_clamp(fx0, BBOX_MIN * fz_aa_hscale, BBOX_MAX * fz_aa_hscale);
-	y0 = (int)fz_clamp(fy0, BBOX_MIN * fz_aa_vscale, BBOX_MAX * fz_aa_vscale);
-	x1 = (int)fz_clamp(fx1, BBOX_MIN * fz_aa_hscale, BBOX_MAX * fz_aa_hscale);
-	y1 = (int)fz_clamp(fy1, BBOX_MIN * fz_aa_vscale, BBOX_MAX * fz_aa_vscale);
+	x0 = (int)fz_clamp(fx0, BBOX_MIN * hscale, BBOX_MAX * hscale);
+	y0 = (int)fz_clamp(fy0, BBOX_MIN * vscale, BBOX_MAX * vscale);
+	x1 = (int)fz_clamp(fx1, BBOX_MIN * hscale, BBOX_MAX * hscale);
+	y1 = (int)fz_clamp(fy1, BBOX_MIN * vscale, BBOX_MAX * vscale);
 
-	d = clip_lerp_y(gel->clip.y0, 0, x0, y0, x1, y1, &v);
+	d = clip_lerp_y(ras->clip.y0, 0, x0, y0, x1, y1, &v);
 	if (d == OUTSIDE) return;
-	if (d == LEAVE) { y1 = gel->clip.y0; x1 = v; }
-	if (d == ENTER) { y0 = gel->clip.y0; x0 = v; }
+	if (d == LEAVE) { y1 = ras->clip.y0; x1 = v; }
+	if (d == ENTER) { y0 = ras->clip.y0; x0 = v; }
 
-	d = clip_lerp_y(gel->clip.y1, 1, x0, y0, x1, y1, &v);
+	d = clip_lerp_y(ras->clip.y1, 1, x0, y0, x1, y1, &v);
 	if (d == OUTSIDE) return;
-	if (d == LEAVE) { y1 = gel->clip.y1; x1 = v; }
-	if (d == ENTER) { y0 = gel->clip.y1; x0 = v; }
+	if (d == LEAVE) { y1 = ras->clip.y1; x1 = v; }
+	if (d == ENTER) { y0 = ras->clip.y1; x0 = v; }
 
-	d = clip_lerp_x(gel->clip.x0, 0, x0, y0, x1, y1, &v);
+	d = clip_lerp_x(ras->clip.x0, 0, x0, y0, x1, y1, &v);
 	if (d == OUTSIDE) {
-		x0 = x1 = gel->clip.x0;
+		x0 = x1 = ras->clip.x0;
 	}
 	if (d == LEAVE) {
-		fz_insert_gel_raw(ctx, gel, gel->clip.x0, v, gel->clip.x0, y1);
-		x1 = gel->clip.x0;
+		fz_insert_gel_raw(ctx, ras, ras->clip.x0, v, ras->clip.x0, y1);
+		x1 = ras->clip.x0;
 		y1 = v;
 	}
 	if (d == ENTER) {
-		fz_insert_gel_raw(ctx, gel, gel->clip.x0, y0, gel->clip.x0, v);
-		x0 = gel->clip.x0;
+		fz_insert_gel_raw(ctx, ras, ras->clip.x0, y0, ras->clip.x0, v);
+		x0 = ras->clip.x0;
 		y0 = v;
 	}
 
-	d = clip_lerp_x(gel->clip.x1, 1, x0, y0, x1, y1, &v);
+	d = clip_lerp_x(ras->clip.x1, 1, x0, y0, x1, y1, &v);
 	if (d == OUTSIDE) {
-		x0 = x1 = gel->clip.x1;
+		x0 = x1 = ras->clip.x1;
 	}
 	if (d == LEAVE) {
-		fz_insert_gel_raw(ctx, gel, gel->clip.x1, v, gel->clip.x1, y1);
-		x1 = gel->clip.x1;
+		fz_insert_gel_raw(ctx, ras, ras->clip.x1, v, ras->clip.x1, y1);
+		x1 = ras->clip.x1;
 		y1 = v;
 	}
 	if (d == ENTER) {
-		fz_insert_gel_raw(ctx, gel, gel->clip.x1, y0, gel->clip.x1, v);
-		x0 = gel->clip.x1;
+		fz_insert_gel_raw(ctx, ras, ras->clip.x1, y0, ras->clip.x1, v);
+		x0 = ras->clip.x1;
 		y0 = v;
 	}
 
-	fz_insert_gel_raw(ctx, gel, x0, y0, x1, y1);
+	fz_insert_gel_raw(ctx, ras, x0, y0, x1, y1);
 }
 
-void
-fz_insert_gel_rect(fz_context *ctx, fz_gel *gel, float fx0, float fy0, float fx1, float fy1)
+static void
+fz_insert_gel_rect(fz_context *ctx, fz_rasterizer *ras, float fx0, float fy0, float fx1, float fy1)
 {
 	int x0, y0, x1, y1;
-	fz_aa_context *ctxaa = ctx->aa;
+	const int hscale = fz_rasterizer_aa_hscale(ras);
+	const int vscale = fz_rasterizer_aa_vscale(ras);
 
 	if (fx0 <= fx1)
 	{
-		fx0 = floorf(fx0 * fz_aa_hscale);
-		fx1 = ceilf(fx1 * fz_aa_hscale);
+		fx0 = floorf(fx0 * hscale);
+		fx1 = ceilf(fx1 * hscale);
 	}
 	else
 	{
-		fx0 = ceilf(fx0 * fz_aa_hscale);
-		fx1 = floorf(fx1 * fz_aa_hscale);
+		fx0 = ceilf(fx0 * hscale);
+		fx1 = floorf(fx1 * hscale);
 	}
 	if (fy0 <= fy1)
 	{
-		fy0 = floorf(fy0 * fz_aa_vscale);
-		fy1 = ceilf(fy1 * fz_aa_vscale);
+		fy0 = floorf(fy0 * vscale);
+		fy1 = ceilf(fy1 * vscale);
 	}
 	else
 	{
-		fy0 = ceilf(fy0 * fz_aa_vscale);
-		fy1 = floorf(fy1 * fz_aa_vscale);
+		fy0 = ceilf(fy0 * vscale);
+		fy1 = floorf(fy1 * vscale);
 	}
 
-	fx0 = fz_clamp(fx0, gel->clip.x0, gel->clip.x1);
-	fx1 = fz_clamp(fx1, gel->clip.x0, gel->clip.x1);
-	fy0 = fz_clamp(fy0, gel->clip.y0, gel->clip.y1);
-	fy1 = fz_clamp(fy1, gel->clip.y0, gel->clip.y1);
+	fx0 = fz_clamp(fx0, ras->clip.x0, ras->clip.x1);
+	fx1 = fz_clamp(fx1, ras->clip.x0, ras->clip.x1);
+	fy0 = fz_clamp(fy0, ras->clip.y0, ras->clip.y1);
+	fy1 = fz_clamp(fy1, ras->clip.y0, ras->clip.y1);
 
 	/* Call fz_clamp so that clamping is done in the float domain, THEN
 	 * cast down to an int. Calling fz_clampi causes problems due to the
 	 * implicit cast down from float to int of the first argument
 	 * over/underflowing and flipping sign at extreme values. */
-	x0 = (int)fz_clamp(fx0, BBOX_MIN * fz_aa_hscale, BBOX_MAX * fz_aa_hscale);
-	y0 = (int)fz_clamp(fy0, BBOX_MIN * fz_aa_vscale, BBOX_MAX * fz_aa_vscale);
-	x1 = (int)fz_clamp(fx1, BBOX_MIN * fz_aa_hscale, BBOX_MAX * fz_aa_hscale);
-	y1 = (int)fz_clamp(fy1, BBOX_MIN * fz_aa_vscale, BBOX_MAX * fz_aa_vscale);
+	x0 = (int)fz_clamp(fx0, BBOX_MIN * hscale, BBOX_MAX * hscale);
+	y0 = (int)fz_clamp(fy0, BBOX_MIN * vscale, BBOX_MAX * vscale);
+	x1 = (int)fz_clamp(fx1, BBOX_MIN * hscale, BBOX_MAX * hscale);
+	y1 = (int)fz_clamp(fy1, BBOX_MIN * vscale, BBOX_MAX * vscale);
 
-	fz_insert_gel_raw(ctx, gel, x1, y0, x1, y1);
-	fz_insert_gel_raw(ctx, gel, x0, y1, x0, y0);
+	fz_insert_gel_raw(ctx, ras, x1, y0, x1, y1);
+	fz_insert_gel_raw(ctx, ras, x0, y1, x0, y0);
 }
 
 static int
@@ -496,8 +296,8 @@ cmpedge(const void *va, const void *vb)
 	return a->y - b->y;
 }
 
-void
-fz_sort_gel(fz_context *ctx, fz_gel *gel)
+static void
+sort_gel(fz_context *ctx, fz_gel *gel)
 {
 	fz_edge *a = gel->edges;
 	int n = gel->len;
@@ -508,9 +308,6 @@ fz_sort_gel(fz_context *ctx, fz_gel *gel)
 	if (n > 10000)
 	{
 		qsort(a, n, sizeof *a, cmpedge);
-#ifdef DUMP_GELS
-		fz_dump_gel(gel);
-#endif
 		return;
 	}
 
@@ -540,15 +337,12 @@ fz_sort_gel(fz_context *ctx, fz_gel *gel)
 		}
 		h /= 3;
 	}
-
-#ifdef DUMP_GELS
-	fz_dump_gel(gel);
-#endif
 }
 
-int
-fz_is_rect_gel(fz_context *ctx, fz_gel *gel)
+static int
+fz_is_rect_gel(fz_context *ctx, fz_rasterizer *ras)
 {
+	fz_gel *gel = (fz_gel *)ras;
 	/* a rectangular path is converted into two vertical edges of identical height */
 	if (gel->len == 2)
 	{
@@ -610,7 +404,7 @@ insert_active(fz_context *ctx, fz_gel *gel, int y, int *e_)
 		do {
 			if (gel->alen + 1 == gel->acap) {
 				int newcap = gel->acap + 64;
-				fz_edge **newactive = fz_resize_array(ctx, gel->active, newcap, sizeof(fz_edge*));
+				fz_edge **newactive = fz_realloc_array(ctx, gel->active, newcap, fz_edge*);
 				gel->active = newactive;
 				gel->acap = newcap;
 			}
@@ -677,10 +471,11 @@ advance_active(fz_context *ctx, fz_gel *gel, int inc)
  */
 
 static inline void
-add_span_aa(fz_aa_context *ctxaa, int *list, int x0, int x1, int xofs, int h)
+add_span_aa(fz_context *ctx, fz_gel *gel, int *list, int x0, int x1, int xofs, int h)
 {
 	int x0pix, x0sub;
 	int x1pix, x1sub;
+	const int hscale = fz_rasterizer_aa_hscale(&gel->super);
 
 	if (x0 == x1)
 		return;
@@ -692,10 +487,10 @@ add_span_aa(fz_aa_context *ctxaa, int *list, int x0, int x1, int xofs, int h)
 	/* The cast to unsigned below helps the compiler produce faster
 	 * code on ARMs as the multiply by reciprocal trick it uses does not
 	 * need to correct for signedness. */
-	x0pix = ((unsigned int)x0) / fz_aa_hscale;
-	x0sub = ((unsigned int)x0) % fz_aa_hscale;
-	x1pix = ((unsigned int)x1) / fz_aa_hscale;
-	x1sub = ((unsigned int)x1) % fz_aa_hscale;
+	x0pix = ((unsigned int)x0) / hscale;
+	x0sub = ((unsigned int)x0) % hscale;
+	x1pix = ((unsigned int)x1) / hscale;
+	x1sub = ((unsigned int)x1) % hscale;
 
 	if (x0pix == x1pix)
 	{
@@ -705,9 +500,9 @@ add_span_aa(fz_aa_context *ctxaa, int *list, int x0, int x1, int xofs, int h)
 
 	else
 	{
-		list[x0pix] += h*(fz_aa_hscale - x0sub);
+		list[x0pix] += h*(hscale - x0sub);
 		list[x0pix+1] += h*x0sub;
-		list[x1pix] += h*(x1sub - fz_aa_hscale);
+		list[x1pix] += h*(x1sub - hscale);
 		list[x1pix+1] += h*-x1sub;
 	}
 }
@@ -715,7 +510,6 @@ add_span_aa(fz_aa_context *ctxaa, int *list, int x0, int x1, int xofs, int h)
 static inline void
 non_zero_winding_aa(fz_context *ctx, fz_gel *gel, int *list, int xofs, int h)
 {
-	fz_aa_context *ctxaa = ctx->aa;
 	int winding = 0;
 	int x = 0;
 	int i;
@@ -725,7 +519,7 @@ non_zero_winding_aa(fz_context *ctx, fz_gel *gel, int *list, int xofs, int h)
 		if (!winding && (winding + gel->active[i]->ydir))
 			x = gel->active[i]->x;
 		if (winding && !(winding + gel->active[i]->ydir))
-			add_span_aa(ctxaa, list, x, gel->active[i]->x, xofs, h);
+			add_span_aa(ctx, gel, list, x, gel->active[i]->x, xofs, h);
 		winding += gel->active[i]->ydir;
 	}
 }
@@ -733,7 +527,6 @@ non_zero_winding_aa(fz_context *ctx, fz_gel *gel, int *list, int xofs, int h)
 static inline void
 even_odd_aa(fz_context *ctx, fz_gel *gel, int *list, int xofs, int h)
 {
-	fz_aa_context *ctxaa = ctx->aa;
 	int even = 0;
 	int x = 0;
 	int i;
@@ -743,47 +536,52 @@ even_odd_aa(fz_context *ctx, fz_gel *gel, int *list, int xofs, int h)
 		if (!even)
 			x = gel->active[i]->x;
 		else
-			add_span_aa(ctxaa, list, x, gel->active[i]->x, xofs, h);
+			add_span_aa(ctx, gel, list, x, gel->active[i]->x, xofs, h);
 		even = !even;
 	}
 }
 
 static inline void
-undelta_aa(fz_aa_context *ctxaa, unsigned char * restrict out, int * restrict in, int n)
+undelta_aa(fz_context *ctx, unsigned char * FZ_RESTRICT out, int * FZ_RESTRICT in, int n, int scale)
 {
 	int d = 0;
+	(void)scale; /* Avoid warnings in some builds */
+
 	while (n--)
 	{
 		d += *in++;
-		*out++ = AA_SCALE(d);
+		*out++ = AA_SCALE(scale, d);
 	}
 }
 
 static inline void
-blit_aa(fz_pixmap *dst, int x, int y, unsigned char *mp, int w, unsigned char *color)
+blit_aa(fz_pixmap *dst, int x, int y, unsigned char *mp, int w, unsigned char *color, void *fn, fz_overprint *eop)
 {
 	unsigned char *dp;
-	dp = dst->samples + (unsigned int)(( (y - dst->y) * dst->w + (x - dst->x) ) * dst->n);
+	dp = dst->samples + (y - dst->y) * (size_t)dst->stride + (x - dst->x) * (size_t)dst->n;
 	if (color)
-		fz_paint_span_with_color(dp, mp, dst->n, w, color);
+		(*(fz_span_color_painter_t *)fn)(dp, mp, dst->n, w, color, dst->alpha, eop);
 	else
-		fz_paint_span(dp, mp, 1, w, 255);
+		(*(fz_span_painter_t *)fn)(dp, dst->alpha, mp, 1, 0, w, 255, eop);
 }
 
 static void
-fz_scan_convert_aa(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *clip, fz_pixmap *dst, unsigned char *color)
+fz_scan_convert_aa(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *clip, fz_pixmap *dst, unsigned char *color, void *painter, fz_overprint *eop)
 {
-	fz_aa_context *ctxaa = ctx->aa;
 	unsigned char *alphas;
 	int *deltas;
 	int y, e;
 	int yd, yc;
 	int height, h0, rh;
+	int bcap;
+	const int hscale = fz_rasterizer_aa_hscale(&gel->super);
+	const int vscale = fz_rasterizer_aa_vscale(&gel->super);
+	const int scale = fz_rasterizer_aa_scale(&gel->super);
 
-	int xmin = fz_idiv(gel->bbox.x0, fz_aa_hscale);
-	int xmax = fz_idiv(gel->bbox.x1, fz_aa_hscale) + 1;
+	int xmin = fz_idiv(gel->super.bbox.x0, hscale);
+	int xmax = fz_idiv_up(gel->super.bbox.x1, hscale);
 
-	int xofs = xmin * fz_aa_hscale;
+	int xofs = xmin * hscale;
 
 	int skipx = clip->x0 - xmin;
 	int clipn = clip->x1 - clip->x0;
@@ -791,17 +589,24 @@ fz_scan_convert_aa(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *cli
 	if (gel->len == 0)
 		return;
 
+	assert(xmin < xmax);
 	assert(clip->x0 >= xmin);
 	assert(clip->x1 <= xmax);
 
-	alphas = fz_malloc_no_throw(ctx, xmax - xmin + 1);
-	deltas = fz_malloc_no_throw(ctx, (xmax - xmin + 1) * sizeof(int));
-	if (alphas == NULL || deltas == NULL)
+	bcap = xmax - xmin + 2; /* big enough for both alphas and deltas */
+	if (bcap > gel->bcap)
 	{
-		fz_free(ctx, alphas);
-		fz_free(ctx, deltas);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "scan conversion failed (malloc failure)");
+		gel->bcap = bcap;
+		fz_free(ctx, gel->alphas);
+		fz_free(ctx, gel->deltas);
+		gel->alphas = NULL;
+		gel->deltas = NULL;
+		alphas = gel->alphas = Memento_label(fz_malloc_array(ctx, bcap, unsigned char), "gel_alphas");
+		deltas = gel->deltas = Memento_label(fz_malloc_array(ctx, bcap, int), "gel_deltas");
 	}
+	alphas = gel->alphas;
+	deltas = gel->deltas;
+
 	memset(deltas, 0, (xmax - xmin + 1) * sizeof(int));
 	gel->alen = 0;
 
@@ -819,7 +624,7 @@ fz_scan_convert_aa(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *cli
 
 	e = 0;
 	y = gel->edges[0].y;
-	yd = fz_idiv(y, fz_aa_vscale);
+	yd = fz_idiv(y, vscale);
 
 	/* Quickly skip to the start of the clip region */
 	while (yd < clip->y0 && (gel->alen > 0 || e < gel->len))
@@ -827,7 +632,7 @@ fz_scan_convert_aa(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *cli
 		/* rh = remaining height = number of subscanlines left to be
 		 * inserted into the current scanline, which will be plotted
 		 * at yd. */
-		rh = (yd+1)*fz_aa_vscale - y;
+		rh = (yd+1)*vscale - y;
 
 		/* height = The number of subscanlines with identical edge
 		 * positions (i.e. 1 if we have any non vertical edges). */
@@ -841,9 +646,9 @@ fz_scan_convert_aa(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *cli
 			yd++;
 		}
 		/* Skip any whole scanlines we can */
-		while (yd < clip->y0 && h0 >= fz_aa_vscale)
+		while (yd < clip->y0 && h0 >= vscale)
 		{
-			h0 -= fz_aa_vscale;
+			h0 -= vscale;
 			yd++;
 		}
 		/* If we haven't hit the start of the clip region, then we
@@ -861,15 +666,15 @@ fz_scan_convert_aa(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *cli
 	/* Now do the active lines */
 	while (gel->alen > 0 || e < gel->len)
 	{
-		yc = fz_idiv(y, fz_aa_vscale);	/* yc = current scanline */
+		yc = fz_idiv(y, vscale);	/* yc = current scanline */
 		/* rh = remaining height = number of subscanlines left to be
 		 * inserted into the current scanline, which will be plotted
 		 * at yd. */
-		rh = (yc+1)*fz_aa_vscale - y;
+		rh = (yc+1)*vscale - y;
 		if (yc != yd)
 		{
-			undelta_aa(ctxaa, alphas, deltas, skipx + clipn);
-			blit_aa(dst, xmin + skipx, yd, alphas + skipx, clipn, color);
+			undelta_aa(ctx, alphas, deltas, skipx + clipn, scale);
+			blit_aa(dst, xmin + skipx, yd, alphas + skipx, clipn, color, painter, eop);
 			memset(deltas, 0, (skipx + clipn) * sizeof(int));
 		}
 		yd = yc;
@@ -882,7 +687,7 @@ fz_scan_convert_aa(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *cli
 		h0 = height;
 		if (h0 > rh)
 		{
-			if (rh < fz_aa_vscale)
+			if (rh < vscale)
 			{
 				/* We have to finish a scanline off, and we
 				 * have more sub scanlines than will fit into
@@ -891,33 +696,33 @@ fz_scan_convert_aa(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *cli
 					even_odd_aa(ctx, gel, deltas, xofs, rh);
 				else
 					non_zero_winding_aa(ctx, gel, deltas, xofs, rh);
-				undelta_aa(ctxaa, alphas, deltas, skipx + clipn);
-				blit_aa(dst, xmin + skipx, yd, alphas + skipx, clipn, color);
+				undelta_aa(ctx, alphas, deltas, skipx + clipn, scale);
+				blit_aa(dst, xmin + skipx, yd, alphas + skipx, clipn, color, painter, eop);
 				memset(deltas, 0, (skipx + clipn) * sizeof(int));
 				yd++;
 				if (yd >= clip->y1)
 					break;
 				h0 -= rh;
 			}
-			if (h0 > fz_aa_vscale)
+			if (h0 > vscale)
 			{
 				/* Calculate the deltas for any completely full
 				 * scanlines. */
-				h0 -= fz_aa_vscale;
+				h0 -= vscale;
 				if (eofill)
-					even_odd_aa(ctx, gel, deltas, xofs, fz_aa_vscale);
+					even_odd_aa(ctx, gel, deltas, xofs, vscale);
 				else
-					non_zero_winding_aa(ctx, gel, deltas, xofs, fz_aa_vscale);
-				undelta_aa(ctxaa, alphas, deltas, skipx + clipn);
+					non_zero_winding_aa(ctx, gel, deltas, xofs, vscale);
+				undelta_aa(ctx, alphas, deltas, skipx + clipn, scale);
 				do
 				{
 					/* Do any successive whole scanlines - no need
 					 * to recalculate deltas here. */
-					blit_aa(dst, xmin + skipx, yd, alphas + skipx, clipn, color);
+					blit_aa(dst, xmin + skipx, yd, alphas + skipx, clipn, color, painter, eop);
 					yd++;
 					if (yd >= clip->y1)
 						goto clip_ended;
-					h0 -= fz_aa_vscale;
+					h0 -= vscale;
 				}
 				while (h0 > 0);
 				/* If we have exactly one full scanline left
@@ -926,7 +731,7 @@ fz_scan_convert_aa(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *cli
 				if (h0 == 0)
 					goto advance;
 				memset(deltas, 0, (skipx + clipn) * sizeof(int));
-				h0 += fz_aa_vscale;
+				h0 += vscale;
 			}
 		}
 		if (eofill)
@@ -941,12 +746,11 @@ advance:
 
 	if (yd < clip->y1)
 	{
-		undelta_aa(ctxaa, alphas, deltas, skipx + clipn);
-		blit_aa(dst, xmin + skipx, yd, alphas + skipx, clipn, color);
+		undelta_aa(ctx, alphas, deltas, skipx + clipn, scale);
+		blit_aa(dst, xmin + skipx, yd, alphas + skipx, clipn, color, painter, eop);
 	}
 clip_ended:
-	fz_free(ctx, deltas);
-	fz_free(ctx, alphas);
+	;
 }
 
 /*
@@ -954,23 +758,24 @@ clip_ended:
  */
 
 static inline void
-blit_sharp(int x0, int x1, int y, const fz_irect *clip, fz_pixmap *dst, unsigned char *color)
+blit_sharp(int x0, int x1, int y, const fz_irect *clip, fz_pixmap *dst, unsigned char *color, fz_solid_color_painter_t *fn, fz_overprint *eop)
 {
 	unsigned char *dp;
+	int da = dst->alpha;
 	x0 = fz_clampi(x0, dst->x, dst->x + dst->w);
 	x1 = fz_clampi(x1, dst->x, dst->x + dst->w);
 	if (x0 < x1)
 	{
-		dp = dst->samples + (unsigned int)(( (y - dst->y) * dst->w + (x0 - dst->x) ) * dst->n);
+		dp = dst->samples + (y - dst->y) * (size_t)dst->stride + (x0 - dst->x) * (size_t)dst->n;
 		if (color)
-			fz_paint_solid_color(dp, dst->n, x1 - x0, color);
+			(*fn)(dp, dst->n, x1 - x0, color, da, eop);
 		else
-			fz_paint_solid_alpha(dp, x1 - x0, 255);
+			memset(dp, 255, x1-x0);
 	}
 }
 
 static inline void
-non_zero_winding_sharp(fz_context *ctx, fz_gel *gel, int y, const fz_irect *clip, fz_pixmap *dst, unsigned char *color)
+non_zero_winding_sharp(fz_context *ctx, fz_gel *gel, int y, const fz_irect *clip, fz_pixmap *dst, unsigned char *color, fz_solid_color_painter_t *fn, fz_overprint *eop)
 {
 	int winding = 0;
 	int x = 0;
@@ -980,13 +785,13 @@ non_zero_winding_sharp(fz_context *ctx, fz_gel *gel, int y, const fz_irect *clip
 		if (!winding && (winding + gel->active[i]->ydir))
 			x = gel->active[i]->x;
 		if (winding && !(winding + gel->active[i]->ydir))
-			blit_sharp(x, gel->active[i]->x, y, clip, dst, color);
+			blit_sharp(x, gel->active[i]->x, y, clip, dst, color, fn, eop);
 		winding += gel->active[i]->ydir;
 	}
 }
 
 static inline void
-even_odd_sharp(fz_context *ctx, fz_gel *gel, int y, const fz_irect *clip, fz_pixmap *dst, unsigned char *color)
+even_odd_sharp(fz_context *ctx, fz_gel *gel, int y, const fz_irect *clip, fz_pixmap *dst, unsigned char *color, fz_solid_color_painter_t *fn, fz_overprint *eop)
 {
 	int even = 0;
 	int x = 0;
@@ -996,7 +801,7 @@ even_odd_sharp(fz_context *ctx, fz_gel *gel, int y, const fz_irect *clip, fz_pix
 		if (!even)
 			x = gel->active[i]->x;
 		else
-			blit_sharp(x, gel->active[i]->x, y, clip, dst, color);
+			blit_sharp(x, gel->active[i]->x, y, clip, dst, color, fn, eop);
 		even = !even;
 	}
 }
@@ -1004,7 +809,7 @@ even_odd_sharp(fz_context *ctx, fz_gel *gel, int y, const fz_irect *clip, fz_pix
 static void
 fz_scan_convert_sharp(fz_context *ctx,
 	fz_gel *gel, int eofill, const fz_irect *clip,
-	fz_pixmap *dst, unsigned char *color)
+	fz_pixmap *dst, unsigned char *color, fz_solid_color_painter_t *fn, fz_overprint *eop)
 {
 	int e = 0;
 	int y = gel->edges[0].y;
@@ -1044,9 +849,9 @@ fz_scan_convert_sharp(fz_context *ctx,
 			while (h--)
 			{
 				if (eofill)
-					even_odd_sharp(ctx, gel, y, clip, dst, color);
+					even_odd_sharp(ctx, gel, y, clip, dst, color, fn, eop);
 				else
-					non_zero_winding_sharp(ctx, gel, y, clip, dst, color);
+					non_zero_winding_sharp(ctx, gel, y, clip, dst, color, fn, eop);
 				y++;
 			}
 		}
@@ -1057,17 +862,71 @@ fz_scan_convert_sharp(fz_context *ctx,
 	}
 }
 
-void
-fz_scan_convert(fz_context *ctx, fz_gel *gel, int eofill, const fz_irect *clip, fz_pixmap *dst, unsigned char *color)
+static void
+fz_convert_gel(fz_context *ctx, fz_rasterizer *rast, int eofill, const fz_irect *clip, fz_pixmap *dst, unsigned char *color, fz_overprint *eop)
 {
-	fz_aa_context *ctxaa = ctx->aa;
-	fz_irect local_clip;
+	fz_gel *gel = (fz_gel *)rast;
 
-	if (fz_is_empty_irect(fz_intersect_irect(fz_pixmap_bbox_no_ctx(dst, &local_clip), clip)))
-		return;
+	sort_gel(ctx, gel);
 
 	if (fz_aa_bits > 0)
-		fz_scan_convert_aa(ctx, gel, eofill, &local_clip, dst, color);
+	{
+		void *fn;
+		if (color)
+			fn = (void *)fz_get_span_color_painter(dst->n, dst->alpha, color, eop);
+		else
+			fn = (void *)fz_get_span_painter(dst->alpha, 1, 0, 255, eop);
+		assert(fn);
+		if (fn == NULL)
+			return;
+		fz_scan_convert_aa(ctx, gel, eofill, clip, dst, color, fn, eop);
+	}
 	else
-		fz_scan_convert_sharp(ctx, gel, eofill, &local_clip, dst, color);
+	{
+		fz_solid_color_painter_t *fn = fz_get_solid_color_painter(dst->n, color, dst->alpha, eop);
+		assert(fn);
+		if (fn == NULL)
+			return;
+		fz_scan_convert_sharp(ctx, gel, eofill, clip, dst, color, (fz_solid_color_painter_t *)fn, eop);
+	}
+}
+
+static const fz_rasterizer_fns gel_rasterizer =
+{
+	fz_drop_gel,
+	fz_reset_gel,
+	NULL, /* postindex */
+	fz_insert_gel,
+	fz_insert_gel_rect,
+	NULL, /* gap */
+	fz_convert_gel,
+	fz_is_rect_gel,
+	0 /* Not reusable */
+};
+
+fz_rasterizer *
+fz_new_gel(fz_context *ctx)
+{
+	fz_gel *gel;
+
+	gel = fz_new_derived_rasterizer(ctx, fz_gel, &gel_rasterizer);
+	fz_try(ctx)
+	{
+		gel->edges = NULL;
+		gel->cap = 512;
+		gel->len = 0;
+		gel->edges = Memento_label(fz_malloc_array(ctx, gel->cap, fz_edge), "gel_edges");
+
+		gel->acap = 64;
+		gel->alen = 0;
+		gel->active = Memento_label(fz_malloc_array(ctx, gel->acap, fz_edge*), "gel_active");
+	}
+	fz_catch(ctx)
+	{
+		fz_free(ctx, gel->edges);
+		fz_free(ctx, gel);
+		fz_rethrow(ctx);
+	}
+
+	return &gel->super;
 }

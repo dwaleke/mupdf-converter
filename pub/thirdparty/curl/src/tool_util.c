@@ -5,11 +5,11 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2012, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2017, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at http://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.haxx.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -27,23 +27,33 @@
 
 #if defined(WIN32) && !defined(MSDOS)
 
-struct timeval tool_tvnow(void)
+struct timeval tvnow(void)
 {
   /*
   ** GetTickCount() is available on _all_ Windows versions from W95 up
   ** to nowadays. Returns milliseconds elapsed since last system boot,
   ** increases monotonically and wraps once 49.7 days have elapsed.
+  **
+  ** GetTickCount64() is available on Windows version from Windows Vista
+  ** and Windows Server 2008 up to nowadays. The resolution of the
+  ** function is limited to the resolution of the system timer, which
+  ** is typically in the range of 10 milliseconds to 16 milliseconds.
   */
   struct timeval now;
+#if defined(_WIN32_WINNT) && (_WIN32_WINNT >= 0x0600) && \
+    (!defined(__MINGW32__) || defined(__MINGW64_VERSION_MAJOR))
+  ULONGLONG milliseconds = GetTickCount64();
+#else
   DWORD milliseconds = GetTickCount();
-  now.tv_sec = milliseconds / 1000;
-  now.tv_usec = (milliseconds % 1000) * 1000;
+#endif
+  now.tv_sec = (long)(milliseconds / 1000);
+  now.tv_usec = (long)((milliseconds % 1000) * 1000);
   return now;
 }
 
 #elif defined(HAVE_CLOCK_GETTIME_MONOTONIC)
 
-struct timeval tool_tvnow(void)
+struct timeval tvnow(void)
 {
   /*
   ** clock_gettime() is granted to be increased monotonically when the
@@ -77,7 +87,7 @@ struct timeval tool_tvnow(void)
 
 #elif defined(HAVE_GETTIMEOFDAY)
 
-struct timeval tool_tvnow(void)
+struct timeval tvnow(void)
 {
   /*
   ** gettimeofday() is not granted to be increased monotonically, due to
@@ -91,7 +101,7 @@ struct timeval tool_tvnow(void)
 
 #else
 
-struct timeval tool_tvnow(void)
+struct timeval tvnow(void)
 {
   /*
   ** time() returns the value of time in seconds since the Epoch.
@@ -110,29 +120,8 @@ struct timeval tool_tvnow(void)
  *
  * Returns: the time difference in number of milliseconds.
  */
-long tool_tvdiff(struct timeval newer, struct timeval older)
+long tvdiff(struct timeval newer, struct timeval older)
 {
-  return (newer.tv_sec-older.tv_sec)*1000+
-    (newer.tv_usec-older.tv_usec)/1000;
+  return (long)(newer.tv_sec-older.tv_sec)*1000+
+    (long)(newer.tv_usec-older.tv_usec)/1000;
 }
-
-/*
- * Same as tool_tvdiff but with full usec resolution.
- *
- * Returns: the time difference in seconds with subsecond resolution.
- */
-double tool_tvdiff_secs(struct timeval newer, struct timeval older)
-{
-  if(newer.tv_sec != older.tv_sec)
-    return (double)(newer.tv_sec-older.tv_sec)+
-      (double)(newer.tv_usec-older.tv_usec)/1000000.0;
-  else
-    return (double)(newer.tv_usec-older.tv_usec)/1000000.0;
-}
-
-/* return the number of seconds in the given input timeval struct */
-long tool_tvlong(struct timeval t1)
-{
-  return t1.tv_sec;
-}
-

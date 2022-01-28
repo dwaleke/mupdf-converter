@@ -6,11 +6,11 @@
 #                            | (__| |_| |  _ <| |___
 #                             \___|\___/|_| \_\_____|
 #
-# Copyright (C) 1998 - 2005, Daniel Stenberg, <daniel@haxx.se>, et al.
+# Copyright (C) 1998 - 2014, Daniel Stenberg, <daniel@haxx.se>, et al.
 #
 # This software is licensed as described in the file COPYING, which
 # you should have received as part of this distribution. The terms
-# are also available at http://curl.haxx.se/docs/copyright.html.
+# are also available at https://curl.haxx.se/docs/copyright.html.
 #
 # You may opt to use, copy, modify, merge, publish, distribute and/or sell
 # copies of the Software, and permit persons to whom the Software is
@@ -120,8 +120,8 @@ sub show {
     return $ret;
 }
 
-# numerically on amount, or alphebetically if same amount
-my @mtest = reverse sort { $k{$a} <=> $k{$b} || $b cmp $a } keys %k;
+# sort alphabetically
+my @mtest = reverse sort { lc($b) cmp lc($a) } keys %k;
 
 print <<TOP
 <table><tr><th>Num</th><th>Keyword</th><th>Test Cases</th></tr>
@@ -136,10 +136,10 @@ printf "</table><p> $count out of %d tests (%d lack keywords)\n",
     scalar(@miss);
 
 for(@miss) {
-    print STDERR "$_ ";
+    print "$_ ";
 }
 
-print STDERR "\n";
+print "\n";
 
 printf "<p> %d different error codes tested for:<br>\n",
     scalar(keys %errors);

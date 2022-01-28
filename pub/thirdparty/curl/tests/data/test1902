@@ -4,6 +4,7 @@
 HTTP
 pipelining
 multi
+flaky
 </keywords>
 </info>
 
@@ -32,6 +33,9 @@ Handle 3 Completed with status 0
 <server>
 http-pipe
 </server>
+<features>
+http
+</features>
 <tool>
 lib1900
 </tool>
@@ -39,16 +43,17 @@ lib1900
 HTTP GET using pipelining, broken pipe
  </name>
  <command>
-http://%HOSTIP:%HTTPPIPEPORT/
+http://%HOSTIP:%HTTPPIPEPORT/ log/urls1902.txt
 </command>
-<file name="log/urls.txt">
+<file name="log/urls1902.txt">
 0 1k.txt
 1000 connection_close.txt
-0 1k.txt
-0 1k.txt
-0 1k.txt
-0 1k.txt
-0 1k.txt
+1 1k.txt
+2 1k.txt
+3 1k.txt
+4 1k.txt
+5 1k.txt
+</file>
 </client>
 
 # Verify data after the test has been "shot"

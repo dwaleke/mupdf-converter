@@ -1,4 +1,11 @@
 <testcase>
+<info>
+<keywords>
+build system
+source analysis
+</keywords>
+</info>
+
 #
 # Client-side
 <client>
@@ -10,7 +17,7 @@ none
 10 chars object name generation testing
 </name>
 <command option="no-output,no-include" type="shell">
-%SRCDIR/../lib/objnames-test10.sh %SRCDIR
+%SRCDIR/objnames-test10.sh %SRCDIR
 </command>
 </client>
 
@@ -19,7 +26,7 @@ none
 <verify>
 <file1 name="log/stderr1221" mode="text">
 </file1>
-<file2 name="log/stdout1221" mode="text">
+<file2 name="log/stdout1221">
 Testing curl_10char_object_name...
 
 result: 16AFKPQRST expected: 16AFKPQRST input: 123__678__ABC__FGH__KLM__PQRSTUV

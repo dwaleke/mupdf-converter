@@ -223,7 +223,7 @@ $write cvh "/* Location of default ca path */"
 $write cvh "#define curl_ca_path ""gnv$curl_ca_path"""
 $!
 $! NTLM_WB_ENABLED requires fork() but configure does not know this
-$! We have to disble this in th configure command line.
+$! We have to disable this in the configure command line.
 $! config_h.com finds that configure defaults to it being enabled so
 $! reports it.  So we need to turn it off here.
 $!
@@ -277,6 +277,18 @@ $endif
 $write cvh "#ifdef CURL_DISABLE_LIBCURL_OPTION"
 $write cvh "#undef CURL_DISABLE_LIBCURL_OPTION"
 $write cvh "#endif"
+$write cvh "#ifndef __VAX"
+$write cvh "#ifdef CURL_DISABLE_NTLM"
+$write cvh "#undef CURL_DISABLE_NTLM"
+$write cvh "#endif"
+$write cvh "#else"
+$! NTLM needs long long or int64 support, missing from DECC C.
+$write cvh "#ifdef __DECC
+$write cvh "#ifndef CURL_DISABLE_NTLM"
+$write cvh "#define CURL_DISABLE_NTLM 1"
+$write cvh "#endif"
+$write cvh "#endif"
+$write cvh "#endif"
 $write cvh "#ifdef CURL_DISABLE_POP3"
 $write cvh "#undef CURL_DISABLE_POP3"
 $write cvh "#endif"
@@ -313,14 +325,8 @@ $! configure defaults to USE_*, a real configure on VMS chooses different.
 $write cvh "#ifdef USE_ARES"
 $write cvh "#undef USE_ARES"
 $write cvh "#endif"
-$write cvh "#ifdef USE_AXTLS"
-$write cvh "#undef USE_AXTLS"
-$write cvh "#endif"
 $write cvh "#ifdef USE_CYASSL"
 $write cvh "#undef USE_CYASSL"
-$write cvh "#endif"
-$write cvh "#ifdef USE_DARWINSSL"
-$write cvh "#undef USE_DARWINSSL"
 $write cvh "#endif"
 $write cvh "#ifdef USE_GNUTLS"
 $write cvh "#undef USE_GNUTLS"
@@ -334,6 +340,9 @@ $write cvh "#endif"
 $write cvh "#ifdef USE_MANUAL"
 $write cvh "#undef USE_MANUAL"
 $write cvh "#endif"
+$write cvh "#ifdef USE_NGHTTP2"
+$write cvh "#undef USE_NGHTTP2"
+$write cvh "#endif"
 $write cvh "#ifdef USE_NSS"
 $write cvh "#undef USE_NSS"
 $write cvh "#endif"
@@ -343,17 +352,18 @@ $write cvh "#endif"
 $write cvh "#ifdef USE_POLARSSL"
 $write cvh "#undef USE_POLARSSL"
 $write cvh "#endif"
-$write cvh "#ifdef USE_SCHANNEL"
-$write cvh "#undef USE_SCHANNEL"
-$write cvh "#endif"
 $write cvh "#ifdef USE_THREADS_POSIX"
 $write cvh "#undef USE_THREADS_POSIX"
 $write cvh "#endif"
 $write cvh "#ifdef USE_TLS_SRP"
 $write cvh "#undef USE_TLS_SRP"
 $write cvh "#endif"
-$write cvh "#ifdef USE_WINDOWS_SSPI"
-$write cvh "#undef USE_WINDOWS_SSPI"
+$write cvh "#ifdef USE_UNIX_SOCKETS"
+$write cvh "#undef USE_UNIX_SOCKETS"
+$write cvh "#endif"
+$!
+$write cvh "#ifndef HAVE_OLD_GSSMIT"
+$write cvh "#define gss_nt_service_name GSS_C_NT_HOSTBASED_SERVICE"
 $write cvh "#endif"
 $!
 $!
@@ -385,9 +395,18 @@ $!
 $   write cvh "#ifndef USE_OPENSSL"
 $   write cvh "#define USE_OPENSSL 1"
 $   write cvh "#endif"
-$   write cvh "#ifndef USE_SSLEAY"
-$   write cvh "#define USE_SSLEAY 1"
-$   write cvh "#endif"
+$   if arch_name .eqs. "VAX"
+$   then
+$       old_mes = f$environment("message")
+$       set message/notext/nofaci/noseve/noident
+$       search/output=nla0: ssl$include:*.h CONF_MFLAGS_IGNORE_MISSING_FILE
+$       status = $severity
+$       set message'old_mes'
+$       if status .nes. "1"
+$       then
+$           write cvh "#define VMS_OLD_SSL 1"
+$       endif
+$   endif
 $endif
 $!
 $!
@@ -405,6 +424,7 @@ $   write cvh "#ifdef HAVE_LIBIDN"
 $   write cvh "#undef HAVE_LIBIDN"
 $   write cvh "#endif"
 $endif
+$!
 $!
 $! LibSSH2 not ported to VMS at this time.
 $! Allow explicit experimentation.
@@ -428,12 +448,16 @@ $   write cvh "#endif"
 $endif
 $!
 $!
+$!
 $if .not. nozlib
 $then
 $   write cvh "#define HAVE_LIBZ 1"
 $   write cvh "#define HAVE_ZLIB_H 1"
 $endif
 $!
+$!
+$! Suppress a message in curl_gssapi.c compile.
+$write cvh "#pragma message disable notconstqual"
 $!
 $! Close out the file
 $!

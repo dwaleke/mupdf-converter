@@ -1,4 +1,29 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #include "mupdf/fitz.h"
+
+#include <string.h>
+#include <limits.h>
 
 /* Fax G3/G4 decoder */
 
@@ -18,13 +43,11 @@
 <raph> peter came up with this, and it makes sense
 */
 
-typedef struct cfd_node_s cfd_node;
-
-struct cfd_node_s
+typedef struct
 {
 	short val;
 	short nbits;
-};
+} cfd_node;
 
 enum
 {
@@ -291,8 +314,6 @@ static inline void setbits(unsigned char *line, int x0, int x1)
 	}
 }
 
-typedef struct fz_faxd_s fz_faxd;
-
 enum
 {
 	STATE_INIT,		/* initial state, optionally waiting for EOL */
@@ -303,7 +324,7 @@ enum
 	STATE_DONE		/* all done */
 };
 
-struct fz_faxd_s
+typedef struct
 {
 	fz_stream *chain;
 
@@ -329,7 +350,7 @@ struct fz_faxd_s
 	unsigned char *rp, *wp;
 
 	unsigned char buffer[4096];
-};
+} fz_faxd;
 
 static inline void eat_bits(fz_faxd *fax, int nbits)
 {
@@ -364,8 +385,8 @@ get_code(fz_context *ctx, fz_faxd *fax, const cfd_node *table, int initialbits)
 
 	if (nbits > initialbits)
 	{
-		int mask = (1 << (32 - initialbits)) - 1;
-		tidx = val + ((word & mask) >> (32 - nbits));
+		int wordmask = (1 << (32 - initialbits)) - 1;
+		tidx = val + ((word & wordmask) >> (32 - nbits));
 		val = table[tidx].val;
 		nbits = initialbits + table[tidx].nbits;
 	}
@@ -562,7 +583,7 @@ dec2d(fz_context *ctx, fz_faxd *fax)
 }
 
 static int
-next_faxd(fz_context *ctx, fz_stream *stm, int max)
+next_faxd(fz_context *ctx, fz_stream *stm, size_t max)
 {
 	fz_faxd *fax = stm->state;
 	unsigned char *p = fax->buffer;
@@ -789,24 +810,19 @@ close_faxd(fz_context *ctx, void *state_)
 	fz_free(ctx, fax);
 }
 
-/* Default: columns = 1728, end_of_block = 1, the rest = 0 */
 fz_stream *
 fz_open_faxd(fz_context *ctx, fz_stream *chain,
 	int k, int end_of_line, int encoded_byte_align,
 	int columns, int rows, int end_of_block, int black_is_1)
 {
-	fz_faxd *fax = NULL;
+	fz_faxd *fax;
 
-	fz_var(fax);
+	if (columns < 0 || columns >= INT_MAX - 7)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "too many columns lead to an integer overflow (%d)", columns);
 
+	fax = fz_malloc_struct(ctx, fz_faxd);
 	fz_try(ctx)
 	{
-		if (columns < 0 || columns >= INT_MAX - 7)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "too many columns lead to an integer overflow (%d)", columns);
-
-		fax = fz_malloc_struct(ctx, fz_faxd);
-		fax->chain = chain;
-
 		fax->ref = NULL;
 		fax->dst = NULL;
 
@@ -829,23 +845,21 @@ fz_open_faxd(fz_context *ctx, fz_stream *chain,
 		fax->dim = fax->k < 0 ? 2 : 1;
 		fax->eolc = 0;
 
-		fax->ref = fz_malloc(ctx, fax->stride);
-		fax->dst = fz_malloc(ctx, fax->stride);
+		fax->ref = Memento_label(fz_malloc(ctx, fax->stride), "fax_ref");
+		fax->dst = Memento_label(fz_malloc(ctx, fax->stride), "fax_dst");
 		fax->rp = fax->dst;
 		fax->wp = fax->dst + fax->stride;
 
 		memset(fax->ref, 0, fax->stride);
 		memset(fax->dst, 0, fax->stride);
+
+		fax->chain = fz_keep_stream(ctx, chain);
 	}
 	fz_catch(ctx)
 	{
-		if (fax)
-		{
-			fz_free(ctx, fax->dst);
-			fz_free(ctx, fax->ref);
-		}
+		fz_free(ctx, fax->dst);
+		fz_free(ctx, fax->ref);
 		fz_free(ctx, fax);
-		fz_drop_stream(ctx, chain);
 		fz_rethrow(ctx);
 	}
 

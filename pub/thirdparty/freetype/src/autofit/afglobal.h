@@ -1,29 +1,29 @@
-/***************************************************************************/
-/*                                                                         */
-/*  afglobal.h                                                             */
-/*                                                                         */
-/*    Auto-fitter routines to compute global hinting values                */
-/*    (specification).                                                     */
-/*                                                                         */
-/*  Copyright 2003-2015 by                                                 */
-/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */
-/*                                                                         */
-/*  This file is part of the FreeType project, and may only be used,       */
-/*  modified, and distributed under the terms of the FreeType project      */
-/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */
-/*  this file you indicate that you have read the license and              */
-/*  understand and accept it fully.                                        */
-/*                                                                         */
-/***************************************************************************/
+/****************************************************************************
+ *
+ * afglobal.h
+ *
+ *   Auto-fitter routines to compute global hinting values
+ *   (specification).
+ *
+ * Copyright (C) 2003-2020 by
+ * David Turner, Robert Wilhelm, and Werner Lemberg.
+ *
+ * This file is part of the FreeType project, and may only be used,
+ * modified, and distributed under the terms of the FreeType project
+ * license, LICENSE.TXT.  By continuing to use, modify, or distribute
+ * this file you indicate that you have read the license and
+ * understand and accept it fully.
+ *
+ */
 
 
-#ifndef __AFGLOBAL_H__
-#define __AFGLOBAL_H__
+#ifndef AFGLOBAL_H_
+#define AFGLOBAL_H_
 
 
 #include "aftypes.h"
 #include "afmodule.h"
-#include "hbshim.h"
+#include "afshaper.h"
 
 
 FT_BEGIN_HEADER
@@ -34,7 +34,7 @@ FT_BEGIN_HEADER
 
 
 #undef  SCRIPT
-#define SCRIPT( s, S, d, h, sc1, sc2, sc3 )                    \
+#define SCRIPT( s, S, d, h, H, ss )                            \
           AF_DECLARE_SCRIPT_CLASS( af_ ## s ## _script_class )
 
 #include "afscript.h"
@@ -60,8 +60,8 @@ FT_BEGIN_HEADER
 
 
   /*
-   *  Default values and flags for both autofitter globals (found in
-   *  AF_ModuleRec) and face globals (in AF_FaceGlobalsRec).
+   * Default values and flags for both autofitter globals (found in
+   * AF_ModuleRec) and face globals (in AF_FaceGlobalsRec).
    */
 
   /* index of fallback style in `af_style_classes' */
@@ -98,8 +98,8 @@ FT_BEGIN_HEADER
 
 
   /*
-   *  Note that glyph_styles[] maps each glyph to an index into the
-   *  `af_style_classes' array.
+   * Note that glyph_styles[] maps each glyph to an index into the
+   * `af_style_classes' array.
    *
    */
   typedef struct  AF_FaceGlobalsRec_
@@ -110,6 +110,7 @@ FT_BEGIN_HEADER
 
 #ifdef FT_CONFIG_OPTION_USE_HARFBUZZ
     hb_font_t*       hb_font;
+    hb_buffer_t*     hb_buf;           /* for feature comparison */
 #endif
 
     /* per-face auto-hinter properties */
@@ -117,14 +118,30 @@ FT_BEGIN_HEADER
 
     AF_StyleMetrics  metrics[AF_STYLE_MAX];
 
+    /* Compute darkening amount once per size.  Use this to check whether */
+    /* darken_{x,y} needs to be recomputed.                               */
+    FT_UShort        stem_darkening_for_ppem;
+    /* Copy from e.g. AF_LatinMetrics.axis[AF_DIMENSION_HORZ] */
+    /* to compute the darkening amount.                       */
+    FT_Pos           standard_vertical_width;
+    /* Copy from e.g. AF_LatinMetrics.axis[AF_DIMENSION_VERT] */
+    /* to compute the darkening amount.                       */
+    FT_Pos           standard_horizontal_width;
+    /* The actual amount to darken a glyph along the X axis. */
+    FT_Pos           darken_x;
+    /* The actual amount to darken a glyph along the Y axis. */
+    FT_Pos           darken_y;
+    /* Amount to scale down by to keep emboldened points */
+    /* on the Y-axis in pre-computed blue zones.         */
+    FT_Fixed         scale_down_factor;
     AF_Module        module;         /* to access global properties */
 
   } AF_FaceGlobalsRec;
 
 
   /*
-   *  model the global hints data for a given face, decomposed into
-   *  style-specific items
+   * model the global hints data for a given face, decomposed into
+   * style-specific items
    */
 
   FT_LOCAL( FT_Error )
@@ -150,7 +167,7 @@ FT_BEGIN_HEADER
 
 FT_END_HEADER
 
-#endif /* __AFGLOBAL_H__ */
+#endif /* AFGLOBAL_H_ */
 
 
 /* END */

@@ -7,12 +7,48 @@
 #define JSV_ISSTRING(v) (v->type==JS_TSHRSTR || v->type==JS_TMEMSTR || v->type==JS_TLITSTR)
 #define JSV_TOSTRING(v) (v->type==JS_TSHRSTR ? v->u.shrstr : v->type==JS_TLITSTR ? v->u.litstr : v->type==JS_TMEMSTR ? v->u.memstr->p : "")
 
-double jsV_numbertointeger(double n)
+double js_strtol(const char *s, char **p, int base)
 {
-	double sign = n < 0 ? -1 : 1;
+	/* ascii -> digit value. max base is 36. */
+	static const unsigned char table[256] = {
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80,
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80,
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80,
+		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 80, 80, 80, 80, 80, 80,
+		80, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+		25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 80, 80, 80, 80, 80,
+		80, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+		25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 80, 80, 80, 80, 80,
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80,
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80,
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80,
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80,
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80,
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80,
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80,
+		80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80
+	};
+	double x;
+	unsigned char c;
+	if (base == 10)
+		for (x = 0, c = *s++; (0 <= c - '0') && (c - '0' < 10); c = *s++)
+			x = x * 10 + (c - '0');
+	else
+		for (x = 0, c = *s++; table[c] < base; c = *s++)
+			x = x * base + table[c];
+	if (p)
+		*p = (char*)s-1;
+	return x;
+}
+
+int jsV_numbertointeger(double n)
+{
+	if (n == 0) return 0;
 	if (isnan(n)) return 0;
-	if (n == 0 || isinf(n)) return n;
-	return sign * floor(fabs(n));
+	n = (n < 0) ? -floor(-n) : floor(n);
+	if (n < INT_MIN) return INT_MIN;
+	if (n > INT_MAX) return INT_MAX;
+	return (int)n;
 }
 
 int jsV_numbertoint32(double n)
@@ -33,7 +69,7 @@ int jsV_numbertoint32(double n)
 
 unsigned int jsV_numbertouint32(double n)
 {
-	return jsV_numbertoint32(n);
+	return (unsigned int)jsV_numbertoint32(n);
 }
 
 short jsV_numbertoint16(double n)
@@ -107,6 +143,9 @@ void jsV_toprimitive(js_State *J, js_Value *v, int preferred)
 		}
 	}
 
+	if (J->strict)
+		js_typeerror(J, "cannot convert object to primitive");
+
 	v->type = JS_TLITSTR;
 	v->u.litstr = "[object]";
 	return;
@@ -128,10 +167,17 @@ int jsV_toboolean(js_State *J, js_Value *v)
 	}
 }
 
-const char *js_itoa(char *out, unsigned int a)
+const char *js_itoa(char *out, int v)
 {
 	char buf[32], *s = out;
-	unsigned int i = 0;
+	unsigned int a;
+	int i = 0;
+	if (v < 0) {
+		a = -v;
+		*s++ = '-';
+	} else {
+		a = v;
+	}
 	while (a) {
 		buf[i++] = (a % 10) + '0';
 		a /= 10;
@@ -160,10 +206,10 @@ double js_stringtofloat(const char *s, char **ep)
 		while (*e >= '0' && *e <= '9') ++e;
 		isflt = 1;
 	}
-	if (isflt || e - s > 9)
+	if (isflt)
 		n = js_strtod(s, &end);
 	else
-		n = strtol(s, &end, 10);
+		n = js_strtol(s, &end, 10);
 	if (end == e) {
 		*ep = (char*)e;
 		return n;
@@ -179,7 +225,7 @@ double jsV_stringtonumber(js_State *J, const char *s)
 	double n;
 	while (jsY_iswhite(*s) || jsY_isnewline(*s)) ++s;
 	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X') && s[2] != 0)
-		n = strtol(s + 2, &e, 16);
+		n = js_strtol(s + 2, &e, 16);
 	else if (!strncmp(s, "Infinity", 8))
 		n = INFINITY, e = (char*)s + 8;
 	else if (!strncmp(s, "+Infinity", 9))
@@ -220,16 +266,25 @@ double jsV_tointeger(js_State *J, js_Value *v)
 const char *jsV_numbertostring(js_State *J, char buf[32], double f)
 {
 	char digits[32], *p = buf, *s = digits;
-	int exp, neg, ndigits, point;
+	int exp, ndigits, point;
 
+	if (f == 0) return "0";
 	if (isnan(f)) return "NaN";
 	if (isinf(f)) return f < 0 ? "-Infinity" : "Infinity";
-	if (f == 0) return "0";
 
-	js_dtoa(f, digits, &exp, &neg, &ndigits);
+	/* Fast case for integers. This only works assuming all integers can be
+	 * exactly represented by a float. This is true for 32-bit integers and
+	 * 64-bit floats. */
+	if (f >= INT_MIN && f <= INT_MAX) {
+		int i = (int)f;
+		if ((double)i == f)
+			return js_itoa(buf, i);
+	}
+
+	ndigits = js_grisu2(f, digits, &exp);
 	point = ndigits + exp;
 
-	if (neg)
+	if (signbit(f))
 		*p++ = '-';
 
 	if (point < -5 || point > 21) {
@@ -283,16 +338,16 @@ const char *jsV_tostring(js_State *J, js_Value *v)
 	case JS_TNUMBER:
 		p = jsV_numbertostring(J, buf, v->u.number);
 		if (p == buf) {
-			unsigned int n = strlen(p);
-			if (n <= offsetof(js_Value, type)) {
+			int n = strlen(p);
+			if (n <= soffsetof(js_Value, type)) {
 				char *s = v->u.shrstr;
 				while (n--) *s++ = *p++;
 				*s = 0;
 				v->type = JS_TSHRSTR;
 				return v->u.shrstr;
 			} else {
-				v->type = JS_TMEMSTR;
 				v->u.memstr = jsV_newmemstring(J, p, n);
+				v->type = JS_TMEMSTR;
 				return v->u.memstr->p;
 			}
 		}
@@ -343,9 +398,23 @@ js_Object *jsV_toobject(js_State *J, js_Value *v)
 	}
 }
 
+void js_newobjectx(js_State *J)
+{
+	js_Object *prototype = NULL;
+	if (js_isobject(J, -1))
+		prototype = js_toobject(J, -1);
+	js_pop(J, 1);
+	js_pushobject(J, jsV_newobject(J, JS_COBJECT, prototype));
+}
+
 void js_newobject(js_State *J)
 {
 	js_pushobject(J, jsV_newobject(J, JS_COBJECT, J->Object_prototype));
+}
+
+void js_newarguments(js_State *J)
+{
+	js_pushobject(J, jsV_newobject(J, JS_CARGUMENTS, J->Object_prototype));
 }
 
 void js_newarray(js_State *J)
@@ -382,7 +451,7 @@ void js_newfunction(js_State *J, js_Function *fun, js_Environment *scope)
 			js_copy(J, -2);
 			js_defproperty(J, -2, "constructor", JS_DONTENUM);
 		}
-		js_defproperty(J, -2, "prototype", JS_DONTCONF);
+		js_defproperty(J, -2, "prototype", JS_DONTENUM | JS_DONTCONF);
 	}
 }
 
@@ -394,7 +463,7 @@ void js_newscript(js_State *J, js_Function *fun, js_Environment *scope)
 	js_pushobject(J, obj);
 }
 
-void js_newcfunction(js_State *J, js_CFunction cfun, const char *name, unsigned int length)
+void js_newcfunction(js_State *J, js_CFunction cfun, const char *name, int length)
 {
 	js_Object *obj = jsV_newobject(J, JS_CCFUNCTION, J->Function_prototype);
 	obj->u.c.name = name;
@@ -410,17 +479,18 @@ void js_newcfunction(js_State *J, js_CFunction cfun, const char *name, unsigned 
 			js_copy(J, -2);
 			js_defproperty(J, -2, "constructor", JS_DONTENUM);
 		}
-		js_defproperty(J, -2, "prototype", JS_DONTCONF);
+		js_defproperty(J, -2, "prototype", JS_DONTENUM | JS_DONTCONF);
 	}
 }
 
 /* prototype -- constructor */
-void js_newcconstructor(js_State *J, js_CFunction cfun, js_CFunction ccon, const char *name, unsigned int length)
+void js_newcconstructor(js_State *J, js_CFunction cfun, js_CFunction ccon, const char *name, int length)
 {
 	js_Object *obj = jsV_newobject(J, JS_CCFUNCTION, J->Function_prototype);
 	obj->u.c.name = name;
 	obj->u.c.function = cfun;
 	obj->u.c.constructor = ccon;
+	obj->u.c.length = length;
 	js_pushobject(J, obj); /* proto obj */
 	{
 		js_pushnumber(J, length);
@@ -428,11 +498,11 @@ void js_newcconstructor(js_State *J, js_CFunction cfun, js_CFunction ccon, const
 		js_rot2(J); /* obj proto */
 		js_copy(J, -2); /* obj proto obj */
 		js_defproperty(J, -2, "constructor", JS_DONTENUM);
-		js_defproperty(J, -2, "prototype", JS_READONLY | JS_DONTENUM | JS_DONTCONF);
+		js_defproperty(J, -2, "prototype", JS_DONTENUM | JS_DONTCONF);
 	}
 }
 
-void js_newuserdata(js_State *J, const char *tag, void *data, js_Finalize finalize)
+void js_newuserdatax(js_State *J, const char *tag, void *data, js_HasProperty has, js_Put put, js_Delete delete, js_Finalize finalize)
 {
 	js_Object *prototype = NULL;
 	js_Object *obj;
@@ -444,8 +514,16 @@ void js_newuserdata(js_State *J, const char *tag, void *data, js_Finalize finali
 	obj = jsV_newobject(J, JS_CUSERDATA, prototype);
 	obj->u.user.tag = tag;
 	obj->u.user.data = data;
+	obj->u.user.has = has;
+	obj->u.user.put = put;
+	obj->u.user.delete = delete;
 	obj->u.user.finalize = finalize;
 	js_pushobject(J, obj);
+}
+
+void js_newuserdata(js_State *J, const char *tag, void *data, js_Finalize finalize)
+{
+	js_newuserdatax(J, tag, data, NULL, NULL, NULL, finalize);
 }
 
 /* Non-trivial operations on values. These are implemented using the stack. */
@@ -548,12 +626,12 @@ retry:
 
 	if (x->type == JS_TBOOLEAN) {
 		x->type = JS_TNUMBER;
-		x->u.number = x->u.boolean;
+		x->u.number = x->u.boolean ? 1 : 0;
 		goto retry;
 	}
 	if (y->type == JS_TBOOLEAN) {
 		y->type = JS_TNUMBER;
-		y->u.number = y->u.boolean;
+		y->u.number = y->u.boolean ? 1 : 0;
 		goto retry;
 	}
 	if ((JSV_ISSTRING(x) || x->type == JS_TNUMBER) && y->type == JS_TOBJECT) {

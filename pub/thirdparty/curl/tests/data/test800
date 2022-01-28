@@ -2,6 +2,7 @@
 <info>
 <keywords>
 IMAP
+Clear Text
 FETCH
 </keywords>
 </info>
@@ -27,10 +28,10 @@ body
 imap
 </server>
  <name>
-IMAP FETCH
+IMAP FETCH message
  </name>
  <command>
-'imap://%HOSTIP:%IMAPPORT/800/;UID=1' -u user:secret
+'imap://%HOSTIP:%IMAPPORT/800/;MAILINDEX=1' -u '"user:sec"ret{'
 </command>
 </client>
 
@@ -39,7 +40,7 @@ IMAP FETCH
 <verify>
 <protocol>
 A001 CAPABILITY
-A002 LOGIN user secret
+A002 LOGIN "\"user" "sec\"ret{"
 A003 SELECT 800
 A004 FETCH 1 BODY[]
 A005 LOGOUT

@@ -1,28 +1,29 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #include "gl-app.h"
 
-static void draw_string_part(float x, float y, const char *s, const char *e)
-{
-	int c;
-	ui_begin_text(ctx);
-	while (s < e)
-	{
-		s += fz_chartorune(&c, s);
-		x += ui_draw_character(ctx, c, x, y + ui.baseline);
-	}
-	ui_end_text(ctx);
-}
-
-static float measure_string_part(const char *s, const char *e)
-{
-	int c;
-	float w = 0;
-	while (s < e)
-	{
-		s += fz_chartorune(&c, s);
-		w += ui_measure_character(ctx, c);
-	}
-	return w;
-}
+#include <string.h>
+#include <stdio.h>
 
 static char *find_string_location(char *s, char *e, float w, float x)
 {
@@ -30,13 +31,21 @@ static char *find_string_location(char *s, char *e, float w, float x)
 	while (s < e)
 	{
 		int n = fz_chartorune(&c, s);
-		float cw = ui_measure_character(ctx, c);
+		float cw = ui_measure_character(c);
 		if (w + (cw / 2) >= x)
 			return s;
 		w += cw;
 		s += n;
 	}
 	return e;
+}
+
+static char *find_input_location(struct line *lines, int n, float left, float top, float x, float y)
+{
+	int i = 0;
+	if (y > top) i = (y - top) / ui.lineheight;
+	if (i >= n) i = n - 1;
+	return find_string_location(lines[i].a, lines[i].b, left, x);
 }
 
 static inline int myisalnum(char *s)
@@ -49,6 +58,50 @@ static inline int myisalnum(char *s)
 	if (cat >= UCDN_GENERAL_CATEGORY_ND && cat <= UCDN_GENERAL_CATEGORY_NO)
 		return 1;
 	return 0;
+}
+
+static char *home_line(char *p, char *start)
+{
+	while (p > start)
+	{
+		if (p[-1] == '\n' || p[-1] == '\r')
+			return p;
+		--p;
+	}
+	return p;
+}
+
+static char *end_line(char *p, char *end)
+{
+	while (p < end)
+	{
+		if (p[0] == '\n' || p[0] == '\r')
+			return p;
+		++p;
+	}
+	return p;
+}
+
+static char *up_line(char *p, char *start)
+{
+	while (p > start)
+	{
+		--p;
+		if (*p == '\n' || *p == '\r')
+			return p;
+	}
+	return p;
+}
+
+static char *down_line(char *p, char *end)
+{
+	while (p < end)
+	{
+		if (*p == '\n' || *p == '\r')
+			return p+1;
+		++p;
+	}
+	return p;
 }
 
 static char *prev_char(char *p, char *start)
@@ -87,11 +140,32 @@ static void ui_input_delete_selection(struct input *input)
 	char *q = input->p > input->q ? input->p : input->q;
 	memmove(p, q, input->end - q);
 	input->end -= q - p;
+	*input->end = 0;
 	input->p = input->q = p;
 }
 
-static void ui_input_paste(struct input *input, const char *buf, int n)
+static void ui_input_paste(struct input *input, const char *buf)
 {
+	int n = (int)strlen(buf);
+	if (input->widget)
+	{
+		char *newtext;
+		int selStart = input->p - input->text;
+		int selEnd = input->q - input->text;
+		if (pdf_edit_text_field_value(ctx, input->widget, input->text, buf, &selStart, &selEnd, &newtext))
+		{
+			size_t len = strlen(newtext);
+			if (len > sizeof(input->text)-1)
+				len = sizeof(input->text)-1;
+			memcpy(input->text, newtext, len);
+			input->text[len] = 0;
+			fz_free(ctx, newtext);
+			input->p = input->text + selStart;
+			input->q = input->p;
+			input->end = input->text + len;
+		}
+		return;
+	}
 	if (input->p != input->q)
 		ui_input_delete_selection(input);
 	if (input->end + n + 1 < input->text + sizeof(input->text))
@@ -105,23 +179,54 @@ static void ui_input_paste(struct input *input, const char *buf, int n)
 	input->q = input->p;
 }
 
-static int ui_input_key(struct input *input)
+static void ui_do_copy(struct input *input)
+{
+	if (input->p != input->q)
+	{
+		char buf[sizeof input->text];
+		char *p = input->p < input->q ? input->p : input->q;
+		char *q = input->p > input->q ? input->p : input->q;
+		memmove(buf, p, q - p);
+		buf[q-p] = 0;
+		ui_set_clipboard(buf);
+	}
+}
+
+static void ui_do_cut(struct input *input)
+{
+	if (input->p != input->q)
+	{
+		ui_do_copy(input);
+		ui_input_delete_selection(input);
+	}
+}
+
+static void ui_do_paste(struct input *input)
+{
+	const char *buf = ui_get_clipboard();
+	if (buf)
+		ui_input_paste(input, buf);
+}
+
+static int ui_input_key(struct input *input, int multiline)
 {
 	switch (ui.key)
 	{
+	case 0:
+		return UI_INPUT_NONE;
 	case KEY_LEFT:
-		if (ui.mod == GLFW_MOD_CONTROL + GLFW_MOD_SHIFT)
+		if (ui.mod == GLUT_ACTIVE_CTRL + GLUT_ACTIVE_SHIFT)
 		{
 			input->q = prev_word(input->q, input->text);
 		}
-		else if (ui.mod == GLFW_MOD_CONTROL)
+		else if (ui.mod == GLUT_ACTIVE_CTRL)
 		{
 			if (input->p != input->q)
 				input->p = input->q = input->p < input->q ? input->p : input->q;
 			else
 				input->p = input->q = prev_word(input->q, input->text);
 		}
-		else if (ui.mod == GLFW_MOD_SHIFT)
+		else if (ui.mod == GLUT_ACTIVE_SHIFT)
 		{
 			if (input->q > input->text)
 				input->q = prev_char(input->q, input->text);
@@ -135,18 +240,18 @@ static int ui_input_key(struct input *input)
 		}
 		break;
 	case KEY_RIGHT:
-		if (ui.mod == GLFW_MOD_CONTROL + GLFW_MOD_SHIFT)
+		if (ui.mod == GLUT_ACTIVE_CTRL + GLUT_ACTIVE_SHIFT)
 		{
 			input->q = next_word(input->q, input->end);
 		}
-		else if (ui.mod == GLFW_MOD_CONTROL)
+		else if (ui.mod == GLUT_ACTIVE_CTRL)
 		{
 			if (input->p != input->q)
 				input->p = input->q = input->p > input->q ? input->p : input->q;
 			else
 				input->p = input->q = next_word(input->q, input->end);
 		}
-		else if (ui.mod == GLFW_MOD_SHIFT)
+		else if (ui.mod == GLUT_ACTIVE_SHIFT)
 		{
 			if (input->q < input->end)
 				input->q = next_char(input->q);
@@ -160,46 +265,46 @@ static int ui_input_key(struct input *input)
 		}
 		break;
 	case KEY_UP:
-	case KEY_HOME:
-		if (ui.mod == GLFW_MOD_CONTROL + GLFW_MOD_SHIFT)
-		{
-			input->q = input->text;
-		}
-		else if (ui.mod == GLFW_MOD_CONTROL)
-		{
-			input->p = input->q = input->text;
-		}
-		else if (ui.mod == GLFW_MOD_SHIFT)
-		{
-			input->q = input->text;
-		}
-		else if (ui.mod == 0)
-		{
-			input->p = input->q = input->text;
-		}
+		if (ui.mod & GLUT_ACTIVE_SHIFT)
+			input->q = up_line(input->q, input->text);
+		else
+			input->p = input->q = up_line(input->p, input->text);
 		break;
 	case KEY_DOWN:
-	case KEY_END:
-		if (ui.mod == GLFW_MOD_CONTROL + GLFW_MOD_SHIFT)
-		{
-			input->q = input->end;
-		}
-		else if (ui.mod == GLFW_MOD_CONTROL)
-		{
-			input->p = input->q = input->end;
-		}
-		else if (ui.mod == GLFW_MOD_SHIFT)
-		{
-			input->q = input->end;
-		}
+		if (ui.mod & GLUT_ACTIVE_SHIFT)
+			input->q = down_line(input->q, input->end);
+		else
+			input->p = input->q = down_line(input->q, input->end);
+		break;
+	case KEY_HOME:
+		if (ui.mod == GLUT_ACTIVE_CTRL + GLUT_ACTIVE_SHIFT)
+			input->q = input->text;
+		else if (ui.mod == GLUT_ACTIVE_SHIFT)
+			input->q = home_line(input->q, input->text);
+		else if (ui.mod == GLUT_ACTIVE_CTRL)
+			input->p = input->q = input->text;
 		else if (ui.mod == 0)
-		{
+			input->p = input->q = home_line(input->p, input->text);
+		break;
+	case KEY_END:
+		if (ui.mod == GLUT_ACTIVE_CTRL + GLUT_ACTIVE_SHIFT)
+			input->q = input->end;
+		else if (ui.mod == GLUT_ACTIVE_SHIFT)
+			input->q = end_line(input->q, input->end);
+		else if (ui.mod == GLUT_ACTIVE_CTRL)
 			input->p = input->q = input->end;
-		}
+		else if (ui.mod == 0)
+			input->p = input->q = end_line(input->p, input->end);
 		break;
 	case KEY_DELETE:
-		if (input->p != input->q)
+		if (ui.mod == GLUT_ACTIVE_SHIFT)
+		{
+			ui_do_cut(input);
+		}
+		else if (input->p != input->q)
+		{
 			ui_input_delete_selection(input);
+		}
 		else if (input->p < input->end)
 		{
 			char *np = next_char(input->p);
@@ -210,9 +315,16 @@ static int ui_input_key(struct input *input)
 		}
 		break;
 	case KEY_ESCAPE:
-		return -1;
+		ui.focus = NULL;
+		return UI_INPUT_NONE;
 	case KEY_ENTER:
-		return 1;
+		if (!multiline)
+		{
+			ui.focus = NULL;
+			return UI_INPUT_ACCEPT;
+		}
+		ui_input_paste(input, "\n");
+		break;
 	case KEY_BACKSPACE:
 		if (input->p != input->q)
 			ui_input_delete_selection(input);
@@ -242,92 +354,162 @@ static int ui_input_key(struct input *input)
 		break;
 	case KEY_CTL_U:
 		input->p = input->q = input->end = input->text;
+		*input->end = 0;
 		break;
 	case KEY_CTL_C:
+		ui_do_copy(input);
+		break;
 	case KEY_CTL_X:
-		if (input->p != input->q)
-		{
-			char buf[sizeof input->text];
-			char *p = input->p < input->q ? input->p : input->q;
-			char *q = input->p > input->q ? input->p : input->q;
-			memmove(buf, p, q - p);
-			buf[q-p] = 0;
-			glfwSetClipboardString(window, buf);
-			if (ui.key == KEY_CTL_X)
-				ui_input_delete_selection(input);
-		}
+		ui_do_cut(input);
 		break;
 	case KEY_CTL_V:
-		{
-			const char *buf = glfwGetClipboardString(window);
-			if (buf)
-				ui_input_paste(input, buf, strlen(buf));
-		}
+		ui_do_paste(input);
+		break;
+	case KEY_INSERT:
+		if (ui.mod == GLUT_ACTIVE_CTRL)
+			ui_do_copy(input);
+		if (ui.mod == GLUT_ACTIVE_SHIFT)
+			ui_do_paste(input);
 		break;
 	default:
-		if (ui.key >= 32)
+		if (ui.key >= 32 && ui.plain)
 		{
 			int cat = ucdn_get_general_category(ui.key);
 			if (ui.key == ' ' || (cat >= UCDN_GENERAL_CATEGORY_LL && cat < UCDN_GENERAL_CATEGORY_ZL))
 			{
-				char buf[8];
+				char buf[9];
 				int n = fz_runetochar(buf, ui.key);
-				ui_input_paste(input, buf, n);
+				buf[n] = 0;
+				ui_input_paste(input, buf);
 			}
 		}
 		break;
 	}
-	return 0;
+	return UI_INPUT_EDIT;
 }
 
-int ui_input(int x0, int y0, int x1, int y1, struct input *input)
+void ui_input_init(struct input *input, const char *text)
 {
-	float px, qx, ex;
+	fz_strlcpy(input->text, text, sizeof input->text);
+	input->end = input->text + strlen(input->text);
+	input->p = input->text;
+	input->q = input->end;
+	input->scroll = 0;
+}
+
+int ui_input(struct input *input, int width, int height)
+{
+	struct line lines[500];
+	fz_irect area;
+	float ax, bx;
+	int ay, sy;
 	char *p, *q;
 	int state;
+	int i, n;
 
-	if (ui.x >= x0 && ui.x < x1 && ui.y >= y0 && ui.y < y1)
+	if (ui.focus == input)
+		state = ui_input_key(input, height > 1);
+	else
+		state = UI_INPUT_NONE;
+
+	area = ui_pack(width, ui.lineheight * height + 6);
+	ui_draw_bevel_rect(area, UI_COLOR_TEXT_BG, 1);
+	area = fz_expand_irect(area, -2);
+
+	if (height > 1)
+		area.x1 -= ui.lineheight;
+
+	n = ui_break_lines(input->text, lines, nelem(lines), area.x1-area.x0-2, NULL);
+
+	if (height > 1)
+		ui_scrollbar(area.x1, area.y0, area.x1+ui.lineheight, area.y1, &input->scroll, 1, fz_maxi(0, n-height)+1);
+	else
+		input->scroll = 0;
+
+	ax = area.x0 + 2;
+	bx = area.x1 - 2;
+	ay = area.y0 + 1;
+	sy = input->scroll * ui.lineheight;
+
+	if (ui_mouse_inside(area))
 	{
 		ui.hot = input;
+		if (!ui.active || ui.active == input)
+			ui.cursor = GLUT_CURSOR_TEXT;
 		if (!ui.active && ui.down)
 		{
-			input->p = find_string_location(input->text, input->end, x0 + 2, ui.x);
+			input->p = find_input_location(lines, n, ax, ay-sy, ui.x, ui.y);
 			ui.active = input;
 		}
 	}
 
 	if (ui.active == input)
 	{
-		input->q = find_string_location(input->text, input->end, x0 + 2, ui.x);
+		input->q = find_input_location(lines, n, ax, ay-sy, ui.x, ui.y);
 		ui.focus = input;
 	}
-
-	if (!ui.focus)
-		ui.focus = input;
-
-	if (ui.focus == input)
-		state = ui_input_key(input);
-	else
-		state = 0;
-
-	glColor4f(1, 1, 1, 1);
-	glRectf(x0, y0, x1, y1);
 
 	p = input->p < input->q ? input->p : input->q;
 	q = input->p > input->q ? input->p : input->q;
 
-	px = x0 + 2 + measure_string_part(input->text, p);
-	qx = px + measure_string_part(p, q);
-	ex = qx + measure_string_part(q, input->end);
-
-	if (ui.focus)
+	for (i = input->scroll; i < n && i < input->scroll+height; ++i)
 	{
-		glColor4f(0.6f, 0.6f, 1.0f, 1.0f);
-		glRectf(px, y0 + 2, qx+1, y1 - 2);
+		char *a = lines[i].a, *b = lines[i].b;
+		if (ui.focus == input)
+		{
+			if (p >= a && p <= b && q >= a && q <= b)
+			{
+				float px = ax + ui_measure_string_part(a, p);
+				float qx = px + ui_measure_string_part(p, q);
+				glColorHex(UI_COLOR_TEXT_SEL_BG);
+				glRectf(px, ay, qx+1, ay + ui.lineheight);
+				glColorHex(UI_COLOR_TEXT_FG);
+				ui_draw_string_part(ax, ay, a, p);
+				glColorHex(UI_COLOR_TEXT_SEL_FG);
+				ui_draw_string_part(px, ay, p, q);
+				glColorHex(UI_COLOR_TEXT_FG);
+				ui_draw_string_part(qx, ay, q, b);
+			}
+			else if (p < a && q >= a && q <= b)
+			{
+				float qx = ax + ui_measure_string_part(a, q);
+				glColorHex(UI_COLOR_TEXT_SEL_BG);
+				glRectf(ax, ay, qx+1, ay + ui.lineheight);
+				glColorHex(UI_COLOR_TEXT_SEL_FG);
+				ui_draw_string_part(ax, ay, a, q);
+				glColorHex(UI_COLOR_TEXT_FG);
+				ui_draw_string_part(qx, ay, q, b);
+			}
+			else if (p >= a && p <= b && q > b)
+			{
+				float px = ax + ui_measure_string_part(a, p);
+				glColorHex(UI_COLOR_TEXT_SEL_BG);
+				glRectf(px, ay, bx, ay + ui.lineheight);
+				glColorHex(UI_COLOR_TEXT_FG);
+				ui_draw_string_part(ax, ay, a, p);
+				glColorHex(UI_COLOR_TEXT_SEL_FG);
+				ui_draw_string_part(px, ay, p, b);
+			}
+			else if (p < a && q > b)
+			{
+				glColorHex(UI_COLOR_TEXT_SEL_BG);
+				glRectf(ax, ay, bx, ay + ui.lineheight);
+				glColorHex(UI_COLOR_TEXT_SEL_FG);
+				ui_draw_string_part(ax, ay, a, b);
+			}
+			else
+			{
+				glColorHex(UI_COLOR_TEXT_FG);
+				ui_draw_string_part(ax, ay, a, b);
+			}
+		}
+		else
+		{
+			glColorHex(UI_COLOR_TEXT_FG);
+			ui_draw_string_part(ax, ay, a, b);
+		}
+		ay += ui.lineheight;
 	}
-
-	glColor4f(0, 0, 0, 1);
-	draw_string_part(x0 + 2, y0 + 2, input->text, input->end);
 
 	return state;
 }

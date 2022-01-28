@@ -5,11 +5,11 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 2013, Linus Nielsen Feltzing <linus@haxx.se>
+ * Copyright (C) 2013 - 2018, Linus Nielsen Feltzing <linus@haxx.se>
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at http://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.haxx.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -32,27 +32,30 @@
 int test(char *URL)
 {
   int res = 0;
-  CURL *curl[NUM_HANDLES];
+  CURL *curl[NUM_HANDLES] = {0};
   int running;
   CURLM *m = NULL;
   int i;
   char target_url[256];
   char dnsentry[256];
-  struct curl_slist *slist = NULL;
+  struct curl_slist *slist = NULL, *slist2;
   char *port = libtest_arg3;
   char *address = libtest_arg2;
 
   (void)URL;
 
   /* Create fake DNS entries for serverX.example.com for all handles */
-  for(i=0; i < NUM_HANDLES; i++) {
-    sprintf(dnsentry, "server%d.example.com:%s:%s", i + 1, port, address);
+  for(i = 0; i < NUM_HANDLES; i++) {
+    msnprintf(dnsentry, sizeof(dnsentry), "server%d.example.com:%s:%s",
+              i + 1, port, address);
     printf("%s\n", dnsentry);
-    slist = curl_slist_append(slist, dnsentry);
+    slist2 = curl_slist_append(slist, dnsentry);
+    if(!slist2) {
+      fprintf(stderr, "curl_slist_append() failed\n");
+      goto test_cleanup;
+    }
+    slist = slist2;
   }
-
-  for(i=0; i < NUM_HANDLES; i++)
-    curl[i] = NULL;
 
   start_test_timing();
 
@@ -60,15 +63,16 @@ int test(char *URL)
 
   multi_init(m);
 
-  multi_setopt(m, CURLMOPT_MAXCONNECTS, 3);
+  multi_setopt(m, CURLMOPT_MAXCONNECTS, 3L);
 
   /* get NUM_HANDLES easy handles */
-  for(i=0; i < NUM_HANDLES; i++) {
+  for(i = 0; i < NUM_HANDLES; i++) {
     /* get an easy handle */
     easy_init(curl[i]);
     /* specify target */
-    sprintf(target_url, "http://server%d.example.com:%s/path/1506%04i",
-            i + 1, port, i + 1);
+    msnprintf(target_url, sizeof(target_url),
+              "http://server%d.example.com:%s/path/1506%04i",
+              i + 1, port, i + 1);
     target_url[sizeof(target_url) - 1] = '\0';
     easy_setopt(curl[i], CURLOPT_URL, target_url);
     /* go verbose */
@@ -81,7 +85,7 @@ int test(char *URL)
 
   fprintf(stderr, "Start at URL 0\n");
 
-  for(i=0; i < NUM_HANDLES; i++) {
+  for(i = 0; i < NUM_HANDLES; i++) {
     /* add handle to multi */
     multi_add_handle(m, curl[i]);
 
@@ -108,17 +112,18 @@ int test(char *URL)
 
       /* At this point, maxfd is guaranteed to be greater or equal than -1. */
 
-      select_test(maxfd+1, &rd, &wr, &exc, &interval);
+      select_test(maxfd + 1, &rd, &wr, &exc, &interval);
 
       abort_on_test_timeout();
     }
+    wait_ms(1); /* to ensure different end times */
   }
 
 test_cleanup:
 
   /* proper cleanup sequence - type PB */
 
-  for(i=0; i < NUM_HANDLES; i++) {
+  for(i = 0; i < NUM_HANDLES; i++) {
     curl_multi_remove_handle(m, curl[i]);
     curl_easy_cleanup(curl[i]);
   }

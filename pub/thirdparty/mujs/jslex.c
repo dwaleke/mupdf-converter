@@ -117,9 +117,15 @@ int jsY_isnewline(int c)
 	return c == 0xA || c == 0xD || c == 0x2028 || c == 0x2029;
 }
 
+#ifndef isalpha
 #define isalpha(c) ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
+#endif
+#ifndef isdigit
 #define isdigit(c) (c >= '0' && c <= '9')
+#endif
+#ifndef ishex
 #define ishex(c) ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))
+#endif
 
 static int jsY_isidentifierstart(int c)
 {
@@ -152,6 +158,10 @@ int jsY_tohex(int c)
 static void jsY_next(js_State *J)
 {
 	Rune c;
+	if (*J->source == 0) {
+		J->lexchar = EOF;
+		return;
+	}
 	J->source += chartorune(&c, J->source);
 	/* consume CR LF as one unit */
 	if (c == '\r' && *J->source == '\n')
@@ -172,10 +182,10 @@ static void jsY_unescape(js_State *J)
 	if (jsY_accept(J, '\\')) {
 		if (jsY_accept(J, 'u')) {
 			int x = 0;
-			if (!jsY_ishex(J->lexchar)) goto error; x |= jsY_tohex(J->lexchar) << 12; jsY_next(J);
-			if (!jsY_ishex(J->lexchar)) goto error; x |= jsY_tohex(J->lexchar) << 8; jsY_next(J);
-			if (!jsY_ishex(J->lexchar)) goto error; x |= jsY_tohex(J->lexchar) << 4; jsY_next(J);
-			if (!jsY_ishex(J->lexchar)) goto error; x |= jsY_tohex(J->lexchar);
+			if (!jsY_ishex(J->lexchar)) { goto error; } x |= jsY_tohex(J->lexchar) << 12; jsY_next(J);
+			if (!jsY_ishex(J->lexchar)) { goto error; } x |= jsY_tohex(J->lexchar) << 8; jsY_next(J);
+			if (!jsY_ishex(J->lexchar)) { goto error; } x |= jsY_tohex(J->lexchar) << 4; jsY_next(J);
+			if (!jsY_ishex(J->lexchar)) { goto error; } x |= jsY_tohex(J->lexchar);
 			J->lexchar = x;
 			return;
 		}
@@ -195,37 +205,45 @@ static void textinit(js_State *J)
 
 static void textpush(js_State *J, Rune c)
 {
-	int n = runelen(c);
+	int n;
+	if (c == EOF)
+		n = 1;
+	else
+		n = runelen(c);
 	if (J->lexbuf.len + n > J->lexbuf.cap) {
 		J->lexbuf.cap = J->lexbuf.cap * 2;
 		J->lexbuf.text = js_realloc(J, J->lexbuf.text, J->lexbuf.cap);
 	}
-	J->lexbuf.len += runetochar(J->lexbuf.text + J->lexbuf.len, &c);
+	if (c == EOF)
+		J->lexbuf.text[J->lexbuf.len++] = 0;
+	else
+		J->lexbuf.len += runetochar(J->lexbuf.text + J->lexbuf.len, &c);
 }
 
 static char *textend(js_State *J)
 {
-	textpush(J, 0);
+	textpush(J, EOF);
 	return J->lexbuf.text;
 }
 
 static void lexlinecomment(js_State *J)
 {
-	while (J->lexchar && J->lexchar != '\n')
+	while (J->lexchar != EOF && J->lexchar != '\n')
 		jsY_next(J);
 }
 
 static int lexcomment(js_State *J)
 {
 	/* already consumed initial '/' '*' sequence */
-	while (J->lexchar != 0) {
+	while (J->lexchar != EOF) {
 		if (jsY_accept(J, '*')) {
 			while (J->lexchar == '*')
 				jsY_next(J);
 			if (jsY_accept(J, '/'))
 				return 0;
 		}
-		jsY_next(J);
+		else
+			jsY_next(J);
 	}
 	return -1;
 }
@@ -352,8 +370,11 @@ static int lexnumber(js_State *J)
 	if (jsY_accept(J, 'e') || jsY_accept(J, 'E')) {
 		if (J->lexchar == '-' || J->lexchar == '+')
 			jsY_next(J);
-		while (jsY_isdec(J->lexchar))
-			jsY_next(J);
+		if (jsY_isdec(J->lexchar))
+			while (jsY_isdec(J->lexchar))
+				jsY_next(J);
+		else
+			jsY_error(J, "missing exponent");
 	}
 
 	if (jsY_isidentifierstart(J->lexchar))
@@ -361,7 +382,6 @@ static int lexnumber(js_State *J)
 
 	J->number = js_strtod(s, NULL);
 	return TK_NUMBER;
-
 }
 
 #endif
@@ -376,6 +396,7 @@ static int lexescape(js_State *J)
 		return 0;
 
 	switch (J->lexchar) {
+	case EOF: jsY_error(J, "unterminated escape sequence");
 	case 'u':
 		jsY_next(J);
 		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar) << 12; jsY_next(J); }
@@ -415,7 +436,7 @@ static int lexstring(js_State *J)
 	textinit(J);
 
 	while (J->lexchar != q) {
-		if (J->lexchar == 0 || J->lexchar == '\n')
+		if (J->lexchar == EOF || J->lexchar == '\n')
 			jsY_error(J, "string not terminated");
 		if (jsY_accept(J, '\\')) {
 			if (lexescape(J))
@@ -465,14 +486,14 @@ static int lexregexp(js_State *J)
 
 	/* regexp body */
 	while (J->lexchar != '/' || inclass) {
-		if (J->lexchar == 0 || J->lexchar == '\n') {
+		if (J->lexchar == EOF || J->lexchar == '\n') {
 			jsY_error(J, "regular expression not terminated");
 		} else if (jsY_accept(J, '\\')) {
 			if (jsY_accept(J, '/')) {
 				textpush(J, '/');
 			} else {
 				textpush(J, '\\');
-				if (J->lexchar == 0 || J->lexchar == '\n')
+				if (J->lexchar == EOF || J->lexchar == '\n')
 					jsY_error(J, "regular expression not terminated");
 				textpush(J, J->lexchar);
 				jsY_next(J);
@@ -678,7 +699,7 @@ static int jsY_lexx(js_State *J)
 				return TK_XOR_ASS;
 			return '^';
 
-		case 0:
+		case EOF:
 			return 0; /* EOF */
 		}
 
@@ -721,6 +742,97 @@ int jsY_lex(js_State *J)
 	return J->lasttoken = jsY_lexx(J);
 }
 
+static int lexjsonnumber(js_State *J)
+{
+	const char *s = J->source - 1;
+
+	if (J->lexchar == '-')
+		jsY_next(J);
+
+	if (J->lexchar == '0')
+		jsY_next(J);
+	else if (J->lexchar >= '1' && J->lexchar <= '9')
+		while (isdigit(J->lexchar))
+			jsY_next(J);
+	else
+		jsY_error(J, "unexpected non-digit");
+
+	if (jsY_accept(J, '.')) {
+		if (isdigit(J->lexchar))
+			while (isdigit(J->lexchar))
+				jsY_next(J);
+		else
+			jsY_error(J, "missing digits after decimal point");
+	}
+
+	if (jsY_accept(J, 'e') || jsY_accept(J, 'E')) {
+		if (J->lexchar == '-' || J->lexchar == '+')
+			jsY_next(J);
+		if (isdigit(J->lexchar))
+			while (isdigit(J->lexchar))
+				jsY_next(J);
+		else
+			jsY_error(J, "missing digits after exponent indicator");
+	}
+
+	J->number = js_strtod(s, NULL);
+	return TK_NUMBER;
+}
+
+static int lexjsonescape(js_State *J)
+{
+	int x = 0;
+
+	/* already consumed '\' */
+
+	switch (J->lexchar) {
+	default: jsY_error(J, "invalid escape sequence");
+	case 'u':
+		jsY_next(J);
+		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar) << 12; jsY_next(J); }
+		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar) << 8; jsY_next(J); }
+		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar) << 4; jsY_next(J); }
+		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar); jsY_next(J); }
+		textpush(J, x);
+		break;
+	case '"': textpush(J, '"'); jsY_next(J); break;
+	case '\\': textpush(J, '\\'); jsY_next(J); break;
+	case '/': textpush(J, '/'); jsY_next(J); break;
+	case 'b': textpush(J, '\b'); jsY_next(J); break;
+	case 'f': textpush(J, '\f'); jsY_next(J); break;
+	case 'n': textpush(J, '\n'); jsY_next(J); break;
+	case 'r': textpush(J, '\r'); jsY_next(J); break;
+	case 't': textpush(J, '\t'); jsY_next(J); break;
+	}
+	return 0;
+}
+
+static int lexjsonstring(js_State *J)
+{
+	const char *s;
+
+	textinit(J);
+
+	while (J->lexchar != '"') {
+		if (J->lexchar == EOF)
+			jsY_error(J, "unterminated string");
+		else if (J->lexchar < 32)
+			jsY_error(J, "invalid control character in string");
+		else if (jsY_accept(J, '\\'))
+			lexjsonescape(J);
+		else {
+			textpush(J, J->lexchar);
+			jsY_next(J);
+		}
+	}
+	jsY_expect(J, '"');
+
+	s = textend(J);
+
+	J->text = js_intern(J, s);
+	return TK_STRING;
+}
+
 int jsY_lexjson(js_State *J)
 {
 	while (1) {
@@ -729,9 +841,8 @@ int jsY_lexjson(js_State *J)
 		while (jsY_iswhite(J->lexchar) || J->lexchar == '\n')
 			jsY_next(J);
 
-		if (J->lexchar >= '0' && J->lexchar <= '9') {
-			return lexnumber(J);
-		}
+		if ((J->lexchar >= '0' && J->lexchar <= '9') || J->lexchar == '-')
+			return lexjsonnumber(J);
 
 		switch (J->lexchar) {
 		case ',': jsY_next(J); return ',';
@@ -742,10 +853,8 @@ int jsY_lexjson(js_State *J)
 		case '}': jsY_next(J); return '}';
 
 		case '"':
-			return lexstring(J);
-
-		case '.':
-			return lexnumber(J);
+			jsY_next(J);
+			return lexjsonstring(J);
 
 		case 'f':
 			jsY_next(J); jsY_expect(J, 'a'); jsY_expect(J, 'l'); jsY_expect(J, 's'); jsY_expect(J, 'e');
@@ -759,7 +868,7 @@ int jsY_lexjson(js_State *J)
 			jsY_next(J); jsY_expect(J, 'r'); jsY_expect(J, 'u'); jsY_expect(J, 'e');
 			return TK_TRUE;
 
-		case 0:
+		case EOF:
 			return 0; /* EOF */
 		}
 

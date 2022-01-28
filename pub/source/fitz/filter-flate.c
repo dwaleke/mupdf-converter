@@ -1,30 +1,52 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #include "mupdf/fitz.h"
 
 #include <zlib.h>
 
-typedef struct fz_flate_s fz_flate;
+#include <string.h>
 
-struct fz_flate_s
+typedef struct
 {
 	fz_stream *chain;
 	z_stream z;
 	unsigned char buffer[4096];
-};
+} fz_inflate_state;
 
-static void *zalloc(void *opaque, unsigned int items, unsigned int size)
+void *fz_zlib_alloc(void *ctx, unsigned int items, unsigned int size)
 {
-	return fz_malloc_array_no_throw(opaque, items, size);
+	return Memento_label(fz_malloc_no_throw(ctx, (size_t)items * size), "zlib_alloc");
 }
 
-static void zfree(void *opaque, void *ptr)
+void fz_zlib_free(void *ctx, void *ptr)
 {
-	fz_free(opaque, ptr);
+	fz_free(ctx, ptr);
 }
 
 static int
-next_flated(fz_context *ctx, fz_stream *stm, int required)
+next_flated(fz_context *ctx, fz_stream *stm, size_t required)
 {
-	fz_flate *state = stm->state;
+	fz_inflate_state *state = stm->state;
 	fz_stream *chain = state->chain;
 	z_streamp zp = &state->z;
 	int code;
@@ -39,7 +61,7 @@ next_flated(fz_context *ctx, fz_stream *stm, int required)
 
 	while (zp->avail_out > 0)
 	{
-		zp->avail_in = fz_available(ctx, chain, 1);
+		zp->avail_in = (uInt)fz_available(ctx, chain, 1);
 		zp->next_in = chain->rp;
 
 		code = inflate(zp, Z_SYNC_FLUSH);
@@ -86,7 +108,7 @@ next_flated(fz_context *ctx, fz_stream *stm, int required)
 static void
 close_flated(fz_context *ctx, void *state_)
 {
-	fz_flate *state = (fz_flate *)state_;
+	fz_inflate_state *state = (fz_inflate_state *)state_;
 	int code;
 
 	code = inflateEnd(&state->z);
@@ -100,34 +122,24 @@ close_flated(fz_context *ctx, void *state_)
 fz_stream *
 fz_open_flated(fz_context *ctx, fz_stream *chain, int window_bits)
 {
-	fz_flate *state = NULL;
-	int code = Z_OK;
+	fz_inflate_state *state;
+	int code;
 
-	fz_var(code);
-	fz_var(state);
+	state = fz_malloc_struct(ctx, fz_inflate_state);
+	state->z.zalloc = fz_zlib_alloc;
+	state->z.zfree = fz_zlib_free;
+	state->z.opaque = ctx;
+	state->z.next_in = NULL;
+	state->z.avail_in = 0;
 
-	fz_try(ctx)
+	code = inflateInit2(&state->z, window_bits);
+	if (code != Z_OK)
 	{
-		state = fz_malloc_struct(ctx, fz_flate);
-		state->chain = chain;
-
-		state->z.zalloc = zalloc;
-		state->z.zfree = zfree;
-		state->z.opaque = ctx;
-		state->z.next_in = NULL;
-		state->z.avail_in = 0;
-
-		code = inflateInit2(&state->z, window_bits);
-		if (code != Z_OK)
-			fz_throw(ctx, FZ_ERROR_GENERIC, "zlib error: inflateInit: %s", state->z.msg);
-	}
-	fz_catch(ctx)
-	{
-		if (state && code == Z_OK)
-			inflateEnd(&state->z);
 		fz_free(ctx, state);
-		fz_drop_stream(ctx, chain);
-		fz_rethrow(ctx);
+		fz_throw(ctx, FZ_ERROR_GENERIC, "zlib error: inflateInit2 failed");
 	}
+
+	state->chain = fz_keep_stream(ctx, chain);
+
 	return fz_new_stream(ctx, state, next_flated, close_flated);
 }

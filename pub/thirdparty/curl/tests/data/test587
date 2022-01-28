@@ -1,4 +1,12 @@
 <testcase>
+<info>
+<keywords>
+HTTP
+HTTP POST
+flaky
+</keywords>
+</info>
+
 #
 # Server-side
 <reply>
@@ -28,15 +36,14 @@ http://%HOSTIP:%HTTPPORT/587
 # Verify data after the test has been "shot"
 <verify>
 <strippart>
-s/^------------------------------[a-z0-9]*/------------------------------/
-s/boundary=----------------------------[a-z0-9]*/boundary=----------------------------/
+s/^--------------------------[a-z0-9]*/------------------------------/
+s/boundary=------------------------[a-z0-9]*/boundary=----------------------------/
 </strippart>
 <protocol>
 POST /587 HTTP/1.1
 Host: %HOSTIP:%HTTPPORT
 Accept: */*
-Content-Length: 732
-Expect: 100-continue
+Content-Length: 744
 Content-Type: multipart/form-data; boundary=----------------------------
 
 ------------------------------

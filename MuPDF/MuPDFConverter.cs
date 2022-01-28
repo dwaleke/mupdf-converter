@@ -12,7 +12,7 @@ namespace MuPDFLib
     {
         public static byte[] ConvertPdfToTiff(byte[] image, float dpi, RenderType type, bool rotateLandscapePages, bool shrinkToLetter, int maxSizeInPdfPixels, string pdfPassword)
         {
-            byte[] output = null;
+            byte[] output;
 
             if (image == null)
                 throw new ArgumentNullException("image");
@@ -36,9 +36,10 @@ namespace MuPDFLib
                         pdfDoc.Page = i;
 
                         Bitmap FirstImage = pdfDoc.GetBitmap(Width, Height, dpi, dpi, 0, type, rotateLandscapePages, shrinkToLetter, maxSizeInPdfPixels);
+
                         if (FirstImage == null)
                             throw new Exception("Unable to convert pdf to tiff!");
-                        using (EncoderParameters ep = new EncoderParameters(2))
+                        using (EncoderParameters? ep = new EncoderParameters(2))
                         {
                             ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.SaveFlag, (long)EncoderValue.MultiFrame);
                             ep.Param[1] = new EncoderParameter(System.Drawing.Imaging.Encoder.Compression, (long)EncoderValue.CompressionLZW);
@@ -83,7 +84,7 @@ namespace MuPDFLib
             {
                 using (FileStream outputStream = new FileStream(outputFile, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
                 {
-                    ImageCodecInfo info = null;
+                    ImageCodecInfo? info = null;
                     foreach (ImageCodecInfo ice in ImageCodecInfo.GetImageEncoders())
                         if (ice.MimeType == "image/tiff")
                             info = ice;
@@ -135,7 +136,7 @@ namespace MuPDFLib
 
         public static byte[] ConvertPdfToFaxTiff(byte[] image, float dpi, bool shrinkToLetter, string pdfPassword)
         {
-            byte[] output = null;
+            byte[] output;
             const long Compression = (long)EncoderValue.CompressionCCITT4;
 
             using (MuPDF pdfDoc = new MuPDF(image, pdfPassword))

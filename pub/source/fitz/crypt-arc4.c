@@ -22,12 +22,13 @@
  */
 
 #include "mupdf/fitz.h"
+#include <string.h>
 
 void
-fz_arc4_init(fz_arc4 *arc4, const unsigned char *key, unsigned keylen)
+fz_arc4_init(fz_arc4 *arc4, const unsigned char *key, size_t keylen)
 {
 	unsigned int t, u;
-	unsigned int keyindex;
+	size_t keyindex;
 	unsigned int stateindex;
 	unsigned char *state;
 	unsigned int counter;
@@ -86,13 +87,18 @@ fz_arc4_next(fz_arc4 *arc4)
 }
 
 void
-fz_arc4_encrypt(fz_arc4 *arc4, unsigned char *dest, const unsigned char *src, unsigned len)
+fz_arc4_encrypt(fz_arc4 *arc4, unsigned char *dest, const unsigned char *src, size_t len)
 {
-	unsigned int i;
+	size_t i;
 	for (i = 0; i < len; i++)
 	{
 		unsigned char x;
 		x = fz_arc4_next(arc4);
 		dest[i] = src[i] ^ x;
 	}
+}
+
+void fz_arc4_final(fz_arc4 *state)
+{
+	memset(state, 0, sizeof(*state));
 }

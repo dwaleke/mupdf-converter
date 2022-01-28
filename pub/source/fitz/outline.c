@@ -1,3 +1,25 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #include "mupdf/fitz.h"
 
 fz_outline *
@@ -22,55 +44,8 @@ fz_drop_outline(fz_context *ctx, fz_outline *outline)
 		fz_outline *next = outline->next;
 		fz_drop_outline(ctx, outline->down);
 		fz_free(ctx, outline->title);
-		fz_drop_link_dest(ctx, &outline->dest);
+		fz_free(ctx, outline->uri);
 		fz_free(ctx, outline);
 		outline = next;
 	}
-}
-
-static void
-fz_debug_outline_xml_imp(fz_context *ctx, fz_output *out, fz_outline *outline, int level)
-{
-	while (outline)
-	{
-		fz_printf(ctx, out, "<outline title=%q page=\"%d\"", outline->title, outline->dest.kind == FZ_LINK_GOTO ? outline->dest.ld.gotor.page + 1 : 0);
-		if (outline->down)
-		{
-			fz_printf(ctx, out, ">\n");
-			fz_debug_outline_xml_imp(ctx, out, outline->down, level + 1);
-			fz_printf(ctx, out, "</outline>\n");
-		}
-		else
-		{
-			fz_printf(ctx, out, " />\n");
-		}
-		outline = outline->next;
-	}
-}
-
-void
-fz_print_outline_xml(fz_context *ctx, fz_output *out, fz_outline *outline)
-{
-	fz_debug_outline_xml_imp(ctx, out, outline, 0);
-}
-
-static void
-fz_print_outline_imp(fz_context *ctx, fz_output *out, fz_outline *outline, int level)
-{
-	int i;
-	while (outline)
-	{
-		for (i = 0; i < level; i++)
-			fz_printf(ctx, out, "\t");
-		fz_printf(ctx, out, "%s\t%d\n", outline->title, outline->dest.kind == FZ_LINK_GOTO ? outline->dest.ld.gotor.page + 1 : 0);
-		if (outline->down)
-			fz_print_outline_imp(ctx, out, outline->down, level + 1);
-		outline = outline->next;
-	}
-}
-
-void
-fz_print_outline(fz_context *ctx, fz_output *out, fz_outline *outline)
-{
-	fz_print_outline_imp(ctx, out, outline, 0);
 }

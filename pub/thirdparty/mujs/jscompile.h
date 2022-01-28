@@ -10,18 +10,14 @@ enum js_OpCode
 	OP_ROT3,	/* A B C -- C A B */
 	OP_ROT4,	/* A B C D -- D A B C */
 
-	OP_NUMBER_0,	/* -- 0 */
-	OP_NUMBER_1,	/* -- 1 */
-	OP_NUMBER_POS,	/* -K- K */
-	OP_NUMBER_NEG,	/* -K- -K */
-
+	OP_INTEGER,	/* -K- (number-32768) */
 	OP_NUMBER,	/* -N- <number> */
 	OP_STRING,	/* -S- <string> */
 	OP_CLOSURE,	/* -F- <closure> */
 
 	OP_NEWARRAY,
 	OP_NEWOBJECT,
-	OP_NEWREGEXP,
+	OP_NEWREGEXP,	/* -S,opts- <regexp> */
 
 	OP_UNDEF,
 	OP_NULL,
@@ -29,16 +25,12 @@ enum js_OpCode
 	OP_FALSE,
 
 	OP_THIS,
-	OP_GLOBAL,
 	OP_CURRENT,	/* currently executing function object */
 
-	OP_INITLOCAL,	/* <value> -K- */
 	OP_GETLOCAL,	/* -K- <value> */
 	OP_SETLOCAL,	/* <value> -K- <value> */
 	OP_DELLOCAL,	/* -K- false */
 
-	OP_INITVAR,	/* <value> -S- */
-	OP_DEFVAR,	/* -S- */
 	OP_HASVAR,	/* -S- ( <value> | undefined ) */
 	OP_GETVAR,	/* -S- <value> */
 	OP_SETVAR,	/* <value> -S- <value> */
@@ -46,6 +38,7 @@ enum js_OpCode
 
 	OP_IN,		/* <name> <obj> -- <exists?> */
 
+	OP_INITARRAY,	/* <obj> <val> -- <obj> */
 	OP_INITPROP,	/* <obj> <key> <val> -- <obj> */
 	OP_INITGETTER,	/* <obj> <key> <closure> -- <obj> */
 	OP_INITSETTER,	/* <obj> <key> <closure> -- <obj> */
@@ -113,8 +106,6 @@ enum js_OpCode
 	OP_JTRUE,
 	OP_JFALSE,
 	OP_RETURN,
-
-	OP_LINE,	/* -K- */
 };
 
 struct js_Function
@@ -122,23 +113,18 @@ struct js_Function
 	const char *name;
 	int script;
 	int lightweight;
-	unsigned int arguments;
-	unsigned int numparams;
+	int strict;
+	int arguments;
+	int numparams;
 
 	js_Instruction *code;
-	unsigned int codecap, codelen;
+	int codecap, codelen;
 
 	js_Function **funtab;
-	unsigned int funcap, funlen;
-
-	double *numtab;
-	unsigned int numcap, numlen;
-
-	const char **strtab;
-	unsigned int strcap, strlen;
+	int funcap, funlen;
 
 	const char **vartab;
-	unsigned int varcap, varlen;
+	int varcap, varlen;
 
 	const char *filename;
 	int line, lastline;
@@ -148,7 +134,7 @@ struct js_Function
 };
 
 js_Function *jsC_compilefunction(js_State *J, js_Ast *prog);
-js_Function *jsC_compile(js_State *J, js_Ast *prog);
+js_Function *jsC_compilescript(js_State *J, js_Ast *prog, int default_strict);
 const char *jsC_opcodestring(enum js_OpCode opcode);
 void jsC_dumpfunction(js_State *J, js_Function *fun);
 

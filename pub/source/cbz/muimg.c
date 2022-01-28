@@ -1,180 +1,301 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #include "mupdf/fitz.h"
+
+#include <string.h>
 
 #define DPI 72.0f
 
-typedef struct img_document_s img_document;
-typedef struct img_page_s img_page;
-
-struct img_page_s
+typedef struct
 {
 	fz_page super;
 	fz_image *image;
-};
+} img_page;
 
-struct img_document_s
+typedef struct
 {
 	fz_document super;
-	fz_image *image;
-};
+	fz_buffer *buffer;
+	const char *format;
+	int page_count;
+	fz_pixmap *(*load_subimage)(fz_context *ctx, const unsigned char *p, size_t total, int subimage);
+} img_document;
 
 static void
-img_close_document(fz_context *ctx, img_document *doc)
+img_drop_document(fz_context *ctx, fz_document *doc_)
 {
-	fz_drop_image(ctx, doc->image);
-	fz_free(ctx, doc);
+	img_document *doc = (img_document*)doc_;
+	fz_drop_buffer(ctx, doc->buffer);
 }
 
 static int
-img_count_pages(fz_context *ctx, img_document *doc)
+img_count_pages(fz_context *ctx, fz_document *doc_, int chapter)
 {
-	return 1;
+	img_document *doc = (img_document*)doc_;
+	return doc->page_count;
 }
 
-static fz_rect *
-img_bound_page(fz_context *ctx, img_page *page, fz_rect *bbox)
+static fz_rect
+img_bound_page(fz_context *ctx, fz_page *page_)
 {
+	img_page *page = (img_page*)page_;
 	fz_image *image = page->image;
 	int xres, yres;
-	fz_image_get_sanitised_res(image, &xres, &yres);
-	bbox->x0 = bbox->y0 = 0;
-	bbox->x1 = image->w * DPI / xres;
-	bbox->y1 = image->h * DPI / yres;
+	fz_rect bbox;
+	uint8_t orientation = fz_image_orientation(ctx, page->image);
+
+	fz_image_resolution(image, &xres, &yres);
+	bbox.x0 = bbox.y0 = 0;
+	if (orientation == 0 || (orientation & 1) == 1)
+	{
+		bbox.x1 = image->w * DPI / xres;
+		bbox.y1 = image->h * DPI / yres;
+	}
+	else
+	{
+		bbox.y1 = image->w * DPI / xres;
+		bbox.x1 = image->h * DPI / yres;
+	}
 	return bbox;
 }
 
 static void
-img_run_page(fz_context *ctx, img_page *page, fz_device *dev, const fz_matrix *ctm, fz_cookie *cookie)
+img_run_page(fz_context *ctx, fz_page *page_, fz_device *dev, fz_matrix ctm, fz_cookie *cookie)
 {
-	fz_matrix local_ctm = *ctm;
+	img_page *page = (img_page*)page_;
 	fz_image *image = page->image;
 	int xres, yres;
 	float w, h;
-	fz_image_get_sanitised_res(image, &xres, &yres);
-	w = image->w * DPI / xres;
-	h = image->h * DPI / yres;
-	fz_pre_scale(&local_ctm, w, h);
-	fz_fill_image(ctx, dev, image, &local_ctm, 1);
+	uint8_t orientation = fz_image_orientation(ctx, page->image);
+	fz_matrix immat = fz_image_orientation_matrix(ctx, page->image);
+
+	fz_image_resolution(image, &xres, &yres);
+	if (orientation == 0 || (orientation & 1) == 1)
+	{
+		w = image->w * DPI / xres;
+		h = image->h * DPI / yres;
+	}
+	else
+	{
+		h = image->w * DPI / xres;
+		w = image->h * DPI / yres;
+	}
+	immat = fz_post_scale(immat, w, h);
+	ctm = fz_concat(immat, ctm);
+	fz_fill_image(ctx, dev, image, ctm, 1, fz_default_color_params);
 }
 
 static void
-img_drop_page_imp(fz_context *ctx, img_page *page)
+img_drop_page(fz_context *ctx, fz_page *page_)
 {
+	img_page *page = (img_page*)page_;
 	fz_drop_image(ctx, page->image);
 }
 
-static img_page *
-img_load_page(fz_context *ctx, img_document *doc, int number)
+static fz_page *
+img_load_page(fz_context *ctx, fz_document *doc_, int chapter, int number)
 {
-	img_page *page;
-
-	if (number != 0)
-		return NULL;
-
-	page = fz_new_page(ctx, sizeof *page);
-
-	page->super.bound_page = (fz_page_bound_page_fn *)img_bound_page;
-	page->super.run_page_contents = (fz_page_run_page_contents_fn *)img_run_page;
-	page->super.drop_page_imp = (fz_page_drop_page_imp_fn *)img_drop_page_imp;
-
-	page->image = fz_keep_image(ctx, doc->image);
-
-	return page;
-}
-
-static int
-img_lookup_metadata(fz_context *ctx, img_document *doc, const char *key, char *buf, int size)
-{
-	if (!strcmp(key, "format"))
-		return fz_strlcpy(buf, "Image", size);
-	return -1;
-}
-
-static img_document *
-img_new_document(fz_context *ctx, fz_image *image)
-{
-	img_document *doc = fz_new_document(ctx, sizeof *doc);
-
-	doc->super.close = (fz_document_close_fn *)img_close_document;
-	doc->super.count_pages = (fz_document_count_pages_fn *)img_count_pages;
-	doc->super.load_page = (fz_document_load_page_fn *)img_load_page;
-	doc->super.lookup_metadata = (fz_document_lookup_metadata_fn *)img_lookup_metadata;
-
-	doc->image = fz_keep_image(ctx, image);
-
-	return doc;
-}
-
-static img_document *
-img_open_document_with_stream(fz_context *ctx, fz_stream *stm)
-{
-	fz_buffer *buffer = NULL;
+	img_document *doc = (img_document*)doc_;
+	fz_pixmap *pixmap = NULL;
 	fz_image *image = NULL;
-	img_document *doc;
+	img_page *page = NULL;
 
-	fz_var(buffer);
+	if (number < 0 || number >= doc->page_count)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot load page %d", number);
+
+	fz_var(pixmap);
 	fz_var(image);
+	fz_var(page);
 
 	fz_try(ctx)
 	{
-		buffer = fz_read_all(ctx, stm, 1024);
-		image = fz_new_image_from_buffer(ctx, buffer);
-		doc = img_new_document(ctx, image);
+		if (doc->load_subimage)
+		{
+			size_t len;
+			unsigned char *data;
+			len = fz_buffer_storage(ctx, doc->buffer, &data);
+			pixmap = doc->load_subimage(ctx, data, len, number);
+			image = fz_new_image_from_pixmap(ctx, pixmap, NULL);
+		}
+		else
+		{
+			image = fz_new_image_from_buffer(ctx, doc->buffer);
+		}
+
+		page = fz_new_derived_page(ctx, img_page, doc_);
+		page->super.bound_page = img_bound_page;
+		page->super.run_page_contents = img_run_page;
+		page->super.drop_page = img_drop_page;
+		page->image = fz_keep_image(ctx, image);
 	}
 	fz_always(ctx)
 	{
 		fz_drop_image(ctx, image);
-		fz_drop_buffer(ctx, buffer);
+		fz_drop_pixmap(ctx, pixmap);
 	}
 	fz_catch(ctx)
+	{
+		fz_free(ctx, page);
 		fz_rethrow(ctx);
+	}
 
-	return doc;
-}
-
-static img_document *
-img_open_document(fz_context *ctx, const char *filename)
-{
-	fz_stream *stm;
-	img_document *doc;
-
-	stm = fz_open_file(ctx, filename);
-
-	fz_try(ctx)
-		doc = img_open_document_with_stream(ctx, stm);
-	fz_always(ctx)
-		fz_drop_stream(ctx, stm);
-	fz_catch(ctx)
-		fz_rethrow(ctx);
-
-	return doc;
+	return (fz_page*)page;
 }
 
 static int
-img_recognize(fz_context *doc, const char *magic)
+img_lookup_metadata(fz_context *ctx, fz_document *doc_, const char *key, char *buf, int size)
 {
-	char *ext = strrchr(magic, '.');
-
-	if (ext)
-	{
-		if (!fz_strcasecmp(ext, ".png") || !fz_strcasecmp(ext, ".jpg") ||
-			!fz_strcasecmp(ext, ".jpeg") || !fz_strcasecmp(ext, ".jfif") ||
-			!fz_strcasecmp(ext, ".jfif-tbnl") || !fz_strcasecmp(ext, ".jpe") ||
-			!fz_strcasecmp(ext, ".gif"))
-			return 100;
-	}
-	if (!strcmp(magic, "png") || !strcmp(magic, "image/png") ||
-		!strcmp(magic, "jpg") || !strcmp(magic, "image/jpeg") ||
-		!strcmp(magic, "jpeg") || !strcmp(magic, "image/pjpeg") ||
-		!strcmp(magic, "jpe") || !strcmp(magic, "jfif") ||
-		!strcmp(magic, "gif") || !strcmp(magic, "image/gif"))
-		return 100;
-
-	return 0;
+	img_document *doc = (img_document*)doc_;
+	if (!strcmp(key, FZ_META_FORMAT))
+		return 1 + (int)fz_strlcpy(buf, doc->format, size);
+	return -1;
 }
+
+static fz_document *
+img_open_document_with_stream(fz_context *ctx, fz_stream *file)
+{
+	img_document *doc = NULL;
+
+	doc = fz_new_derived_document(ctx, img_document);
+
+	doc->super.drop_document = img_drop_document;
+	doc->super.count_pages = img_count_pages;
+	doc->super.load_page = img_load_page;
+	doc->super.lookup_metadata = img_lookup_metadata;
+
+	fz_try(ctx)
+	{
+		int fmt;
+		size_t len;
+		unsigned char *data;
+
+		doc->buffer = fz_read_all(ctx, file, 0);
+		len = fz_buffer_storage(ctx, doc->buffer, &data);
+
+		fmt = FZ_IMAGE_UNKNOWN;
+		if (len >= 8)
+			fmt = fz_recognize_image_format(ctx, data);
+		if (fmt == FZ_IMAGE_TIFF)
+		{
+			doc->page_count = fz_load_tiff_subimage_count(ctx, data, len);
+			doc->load_subimage = fz_load_tiff_subimage;
+			doc->format = "TIFF";
+		}
+		else if (fmt == FZ_IMAGE_PNM)
+		{
+			doc->page_count = fz_load_pnm_subimage_count(ctx, data, len);
+			doc->load_subimage = fz_load_pnm_subimage;
+			doc->format = "PNM";
+		}
+		else if (fmt == FZ_IMAGE_JBIG2)
+		{
+			doc->page_count = fz_load_jbig2_subimage_count(ctx, data, len);
+			if (doc->page_count > 1)
+				doc->load_subimage = fz_load_jbig2_subimage;
+			doc->format = "JBIG2";
+		}
+		else if (fmt == FZ_IMAGE_BMP)
+		{
+			doc->page_count = fz_load_bmp_subimage_count(ctx, data, len);
+			doc->load_subimage = fz_load_bmp_subimage;
+			doc->format = "BMP";
+		}
+		else
+		{
+			doc->page_count = 1;
+			doc->format = "Image";
+		}
+	}
+	fz_catch(ctx)
+	{
+		fz_drop_document(ctx, (fz_document*)doc);
+		fz_rethrow(ctx);
+	}
+
+	return (fz_document*)doc;
+}
+
+static const char *img_extensions[] =
+{
+	"bmp",
+	"gif",
+	"hdp",
+	"j2k",
+	"jb2",
+	"jbig2",
+	"jfif",
+	"jfif-tbnl",
+	"jp2",
+	"jpe",
+	"jpeg",
+	"jpg",
+	"jpx",
+	"jxr",
+	"pam",
+	"pbm",
+	"pfm",
+	"pgm",
+	"pkm",
+	"png",
+	"pnm",
+	"ppm",
+	"tif",
+	"tiff",
+	"wdp",
+	NULL
+};
+
+static const char *img_mimetypes[] =
+{
+	"image/bmp",
+	"image/gif",
+	"image/jp2",
+	"image/jpeg",
+	"image/jpx",
+	"image/jxr",
+	"image/pjpeg",
+	"image/png",
+	"image/tiff",
+	"image/vnd.ms-photo",
+	"image/x-jb2",
+	"image/x-jbig2",
+	"image/x-portable-anymap",
+	"image/x-portable-arbitrarymap",
+	"image/x-portable-bitmap",
+	"image/x-portable-greymap",
+	"image/x-portable-pixmap",
+	"image/x-portable-floatmap",
+	"image/x-tiff",
+	NULL
+};
 
 fz_document_handler img_document_handler =
 {
-	(fz_document_recognize_fn *)&img_recognize,
-	(fz_document_open_fn *)&img_open_document,
-	(fz_document_open_with_stream_fn *)&img_open_document_with_stream
+	NULL,
+	NULL,
+	img_open_document_with_stream,
+	img_extensions,
+	img_mimetypes,
+	NULL,
+	NULL
 };

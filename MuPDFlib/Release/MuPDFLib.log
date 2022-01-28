@@ -1,8 +1,0 @@
-﻿  MuPDFClass.cpp
-  MuPDFClassCallers.cpp
-     Creating library C:\Users\dwalme\source\repos\mupdf-converter\MuPDFlib\Release\MuPDFLib-x64.lib and object C:\Users\dwalme\source\repos\mupdf-converter\MuPDFlib\Release\MuPDFLib-x64.exp
-  Generating code
-  Previous IPDB not found, fall back to full compilation.
-  All 4329 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
-  Finished generating code
-  MuPDFLib.vcxproj -> C:\Users\dwalme\source\repos\mupdf-converter\MuPDFlib\Release\MuPDFLib-x64.dll

@@ -1,53 +1,112 @@
+// Copyright (C) 2004-2021 Artifex Software, Inc.
+//
+// This file is part of MuPDF.
+//
+// MuPDF is free software: you can redistribute it and/or modify it under the
+// terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// MuPDF is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with MuPDF. If not, see <https://www.gnu.org/licenses/agpl-3.0.en.html>
+//
+// Alternative licensing terms are available from the licensor.
+// For commercial licensing, see <https://www.artifex.com/> or contact
+// Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
+// CA 94945, U.S.A., +1(415)492-9861, for further information.
+
 #include "gl-app.h"
 
-#include "mupdf/pdf.h" /* for pdf specifics and forms */
+#include <limits.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#ifdef _MSC_VER
+#define stat _stat
+#endif
+#ifndef _WIN32
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <signal.h>
+#endif
+
+#include "mupdf/helpers/pkcs7-openssl.h"
+
+#include "mujs.h"
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+#ifndef _WIN32
+#include <unistd.h> /* for fork, exec, and getcwd */
+#else
+#include <direct.h> /* for getcwd */
+#endif
+
+#ifdef __APPLE__
+static void cleanup(void);
+void glutLeaveMainLoop(void)
+{
+	cleanup();
+	exit(0);
+}
+#endif
+
+time_t
+stat_mtime(const char *path)
+{
+	struct stat info;
+
+	if (stat(path, &info) < 0)
+		return 0;
+
+	return info.st_mtime;
+}
+
+fz_context *ctx = NULL;
+pdf_document *pdf = NULL;
+pdf_page *page = NULL;
+fz_stext_page *page_text = NULL;
+fz_matrix draw_page_ctm, view_page_ctm, view_page_inv_ctm;
+fz_rect page_bounds, draw_page_bounds, view_page_bounds;
+fz_irect view_page_area;
+char filename[PATH_MAX];
 
 enum
 {
 	/* Screen furniture: aggregate size of unusable space from title bars, task bars, window borders, etc */
 	SCREEN_FURNITURE_W = 20,
 	SCREEN_FURNITURE_H = 40,
-
-	/* Default EPUB/HTML layout dimensions */
-	DEFAULT_LAYOUT_W = 450,
-	DEFAULT_LAYOUT_H = 600,
-	DEFAULT_LAYOUT_EM = 12,
-
-	/* Default UI sizes */
-	DEFAULT_UI_FONTSIZE = 15,
-	DEFAULT_UI_BASELINE = 14,
-	DEFAULT_UI_LINEHEIGHT = 18,
 };
-
-#define DEFAULT_WINDOW_W (612 * currentzoom / 72)
-#define DEFAULT_WINDOW_H (792 * currentzoom / 72)
-
-struct ui ui;
-fz_context *ctx = NULL;
-GLFWwindow *window = NULL;
-
-/* OpenGL capabilities */
-static int has_ARB_texture_non_power_of_two = 1;
-static GLint max_texture_size = 8192;
-
-static int ui_needs_update = 0;
-
-static void ui_begin(void)
-{
-	ui_needs_update = 0;
-	ui.hot = NULL;
-}
-
-static void ui_end(void)
-{
-	if (!ui.down && !ui.middle && !ui.right)
-		ui.active = NULL;
-	if (ui_needs_update)
-		glfwPostEmptyEvent();
-}
 
 static void open_browser(const char *uri)
 {
+	char buf[PATH_MAX];
+#ifndef _WIN32
+	pid_t pid;
+#endif
+
+	/* Relative file:// URI, make it absolute! */
+	if (!strncmp(uri, "file://", 7) && uri[7] != '/')
+	{
+		char buf_base[PATH_MAX];
+		char buf_cwd[PATH_MAX];
+		fz_dirname(buf_base, filename, sizeof buf_base);
+		if (getcwd(buf_cwd, sizeof buf_cwd))
+		{
+			fz_snprintf(buf, sizeof buf, "file://%s/%s/%s", buf_cwd, buf_base, uri+7);
+			fz_cleanname(buf+7);
+			uri = buf;
+		}
+	}
+
 #ifdef _WIN32
 	ShellExecuteA(NULL, "open", uri, 0, 0, SW_SHOWNORMAL);
 #else
@@ -60,70 +119,35 @@ static void open_browser(const char *uri)
 		browser = "xdg-open";
 #endif
 	}
-	if (fork() == 0)
+	/* Fork once to start a child process that we wait on. This
+	 * child process forks again and immediately exits. The
+	 * grandchild process continues in the background. The purpose
+	 * of this strange two-step is to avoid zombie processes. See
+	 * bug 695701 for an explanation. */
+	pid = fork();
+	if (pid == 0)
 	{
-		execlp(browser, browser, uri, (char*)0);
-		fprintf(stderr, "cannot exec '%s'\n", browser);
-		exit(0);
+		if (fork() == 0)
+		{
+			execlp(browser, browser, uri, (char*)0);
+			fprintf(stderr, "cannot exec '%s'\n", browser);
+		}
+		_exit(0);
 	}
+	waitpid(pid, NULL, 0);
 #endif
 }
 
-const char *ogl_error_string(GLenum code)
-{
-#define CASE(E) case E: return #E; break
-	switch (code)
-	{
-	/* glGetError */
-	CASE(GL_NO_ERROR);
-	CASE(GL_INVALID_ENUM);
-	CASE(GL_INVALID_VALUE);
-	CASE(GL_INVALID_OPERATION);
-	CASE(GL_OUT_OF_MEMORY);
-	CASE(GL_STACK_UNDERFLOW);
-	CASE(GL_STACK_OVERFLOW);
-	default: return "(unknown)";
-	}
-#undef CASE
-}
-
-void ogl_assert(fz_context *ctx, const char *msg)
-{
-	int code = glGetError();
-	if (code != GL_NO_ERROR) {
-		fz_warn(ctx, "glGetError(%s): %s", msg, ogl_error_string(code));
-	}
-}
-
-void ui_draw_image(struct texture *tex, float x, float y)
-{
-	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-	glEnable(GL_BLEND);
-	glBindTexture(GL_TEXTURE_2D, tex->id);
-	glEnable(GL_TEXTURE_2D);
-	glBegin(GL_TRIANGLE_STRIP);
-	{
-		glColor4f(1, 1, 1, 1);
-		glTexCoord2f(0, tex->t);
-		glVertex2f(x + tex->x, y + tex->y + tex->h);
-		glTexCoord2f(0, 0);
-		glVertex2f(x + tex->x, y + tex->y);
-		glTexCoord2f(tex->s, tex->t);
-		glVertex2f(x + tex->x + tex->w, y + tex->y + tex->h);
-		glTexCoord2f(tex->s, 0);
-		glVertex2f(x + tex->x + tex->w, y + tex->y);
-	}
-	glEnd();
-	glDisable(GL_TEXTURE_2D);
-	glDisable(GL_BLEND);
-}
-
-static const int zoom_list[] = { 18, 24, 36, 54, 72, 96, 120, 144, 180, 216, 288 };
+static const int zoom_list[] = {
+	24, 36, 48, 60, 72, 84, 96, 108,
+	120, 144, 168, 192, 228, 264,
+	300, 350, 400, 450, 500, 550, 600
+};
 
 static int zoom_in(int oldres)
 {
 	int i;
-	for (i = 0; i < nelem(zoom_list) - 1; ++i)
+	for (i = 0; i < (int)nelem(zoom_list) - 1; ++i)
 		if (zoom_list[i] <= oldres && zoom_list[i+1] > oldres)
 			return zoom_list[i+1];
 	return zoom_list[i];
@@ -132,172 +156,952 @@ static int zoom_in(int oldres)
 static int zoom_out(int oldres)
 {
 	int i;
-	for (i = 0; i < nelem(zoom_list) - 1; ++i)
+	for (i = 0; i < (int)nelem(zoom_list) - 1; ++i)
 		if (zoom_list[i] < oldres && zoom_list[i+1] >= oldres)
 			return zoom_list[i];
 	return zoom_list[0];
+}
+
+static const char *paper_size_name(int w, int h)
+{
+	/* ISO A */
+	if (w == 2384 && h == 3370) return "A0";
+	if (w == 1684 && h == 2384) return "A1";
+	if (w == 1191 && h == 1684) return "A2";
+	if (w == 842 && h == 1191) return "A3";
+	if (w == 595 && h == 842) return "A4";
+	if (w == 420 && h == 595) return "A5";
+	if (w == 297 && h == 420) return "A6";
+
+	/* US */
+	if (w == 612 && h == 792) return "Letter";
+	if (w == 612 && h == 1008) return "Legal";
+	if (w == 792 && h == 1224) return "Ledger";
+	if (w == 1224 && h == 792) return "Tabloid";
+
+	return NULL;
 }
 
 #define MINRES (zoom_list[0])
 #define MAXRES (zoom_list[nelem(zoom_list)-1])
 #define DEFRES 96
 
-static const char *title = "MuPDF/GL";
+static char *password = "";
+static char *anchor = NULL;
+static float layout_w = FZ_DEFAULT_LAYOUT_W;
+static float layout_h = FZ_DEFAULT_LAYOUT_H;
+static float layout_em = FZ_DEFAULT_LAYOUT_EM;
+static char *layout_css = NULL;
+static int layout_use_doc_css = 1;
+static int enable_js = 1;
+static int tint_white = 0xFFFFF0;
+static int tint_black = 0x303030;
+
 static fz_document *doc = NULL;
-static fz_page *page = NULL;
-static pdf_document *pdf = NULL;
+static fz_page *fzpage = NULL;
+static fz_separations *seps = NULL;
 static fz_outline *outline = NULL;
 static fz_link *links = NULL;
 
 static int number = 0;
 
+static fz_pixmap *page_contents = NULL;
 static struct texture page_tex = { 0 };
+static int screen_w = 0, screen_h = 0;
 static int scroll_x = 0, scroll_y = 0;
 static int canvas_x = 0, canvas_w = 100;
 static int canvas_y = 0, canvas_h = 100;
 
-static struct texture annot_tex[256];
-static int annot_count = 0;
+static int outline_w = 14; /* to be scaled by lineheight */
+static int annotate_w = 12; /* to be scaled by lineheight */
 
-static int screen_w = 1280, screen_h = 720;
-static int window_w = 1, window_h = 1;
-
-static int oldpage = 0, currentpage = 0;
+static int oldtint = 0, currenttint = 0;
+static int oldinvert = 0, currentinvert = 0;
+static int oldicc = 1, currenticc = 1;
+static int oldaa = 8, currentaa = 8;
+static int oldseparations = 1, currentseparations = 1;
+static fz_location oldpage = {0,0}, currentpage = {0,0};
 static float oldzoom = DEFRES, currentzoom = DEFRES;
 static float oldrotate = 0, currentrotate = 0;
-static fz_matrix page_ctm, page_inv_ctm;
+int page_contents_changed = 0;
+int page_annots_changed = 0;
 
+static fz_output *trace_file = NULL;
+static char *reflow_options = NULL;
 static int isfullscreen = 0;
 static int showoutline = 0;
+static int showundo = 0;
 static int showlinks = 0;
 static int showsearch = 0;
 static int showinfo = 0;
+int showannotate = 0;
+int showform = 0;
+
+static const char *tooltip = NULL;
+
+struct mark
+{
+	fz_location loc;
+	fz_point scroll;
+};
 
 static int history_count = 0;
-static int history[256];
+static struct mark history[256];
 static int future_count = 0;
-static int future[256];
-static int marks[10];
+static struct mark future[256];
+static struct mark marks[10];
 
-static int search_active = 0;
+static char *get_history_filename(void)
+{
+	static char history_path[PATH_MAX];
+	static int once = 0;
+	if (!once)
+	{
+		char *home = getenv("MUPDF_HISTORY");
+		if (home)
+			return home;
+		home = getenv("XDG_CACHE_HOME");
+		if (!home)
+			home = getenv("HOME");
+		if (!home)
+			home = getenv("USERPROFILE");
+		if (!home)
+			home = "/tmp";
+		fz_snprintf(history_path, sizeof history_path, "%s/.mupdf.history", home);
+		fz_cleanname(history_path);
+		once = 1;
+	}
+	return history_path;
+}
+
+static int read_history_file_as_json(js_State *J)
+{
+	fz_buffer *buf = NULL;
+	const char *json = "{}";
+	const char *history_file;
+
+	fz_var(buf);
+
+	history_file = get_history_filename();
+	if (strlen(history_file) == 0)
+		return 0;
+
+	if (fz_file_exists(ctx, history_file))
+	{
+		fz_try(ctx)
+		{
+			buf = fz_read_file(ctx, history_file);
+			json = fz_string_from_buffer(ctx, buf);
+		}
+		fz_catch(ctx)
+			;
+	}
+
+	js_getglobal(J, "JSON");
+	js_getproperty(J, -1, "parse");
+	js_pushnull(J);
+	js_pushstring(J, json);
+	if (js_pcall(J, 1))
+	{
+		fz_warn(ctx, "Can't parse history file: %s", js_trystring(J, -1, "error"));
+		js_pop(J, 1);
+		js_newobject(J);
+	}
+	else
+	{
+		js_rot2pop1(J);
+	}
+
+	fz_drop_buffer(ctx, buf);
+	return 1;
+}
+
+static fz_location try_location(js_State *J)
+{
+	fz_location loc;
+	if (js_isnumber(J, -1))
+		loc = fz_make_location(0, js_tryinteger(J, -1, 1) - 1);
+	else
+	{
+		js_getindex(J, -1, 0);
+		loc.chapter = js_tryinteger(J, -1, 1) - 1;
+		js_pop(J, 1);
+		js_getindex(J, -1, 1);
+		loc.page = js_tryinteger(J, -1, 1) - 1;
+		js_pop(J, 1);
+	}
+	return loc;
+}
+
+static void push_location(js_State *J, fz_location loc)
+{
+	if (loc.chapter == 0)
+		js_pushnumber(J, (double)loc.page+1);
+	else
+	{
+		js_newarray(J);
+		js_pushnumber(J, (double)loc.chapter+1);
+		js_setindex(J, -2, 0);
+		js_pushnumber(J, (double)loc.page+1);
+		js_setindex(J, -2, 1);
+	}
+}
+
+static void load_history(void)
+{
+	js_State *J;
+	char absname[PATH_MAX];
+	int i, n;
+
+	if (!fz_realpath(filename, absname))
+		return;
+
+	J = js_newstate(NULL, NULL, 0);
+
+	if (!read_history_file_as_json(J))
+		return;
+
+	if (js_hasproperty(J, -1, absname))
+	{
+		if (js_hasproperty(J, -1, "current"))
+		{
+			currentpage = try_location(J);
+			js_pop(J, 1);
+		}
+
+		if (js_hasproperty(J, -1, "history"))
+		{
+			if (js_isarray(J, -1))
+			{
+				history_count = fz_clampi(js_getlength(J, -1), 0, nelem(history));
+				for (i = 0; i < history_count; ++i)
+				{
+					js_getindex(J, -1, i);
+					history[i].loc = try_location(J);
+					js_pop(J, 1);
+				}
+			}
+			js_pop(J, 1);
+		}
+
+		if (js_hasproperty(J, -1, "future"))
+		{
+			if (js_isarray(J, -1))
+			{
+				future_count = fz_clampi(js_getlength(J, -1), 0, nelem(future));
+				for (i = 0; i < future_count; ++i)
+				{
+					js_getindex(J, -1, i);
+					future[i].loc = try_location(J);
+					js_pop(J, 1);
+				}
+			}
+			js_pop(J, 1);
+		}
+
+		if (js_hasproperty(J, -1, "marks"))
+		{
+			if (js_isarray(J, -1))
+			{
+				n = fz_clampi(js_getlength(J, -1), 0, nelem(marks));
+				for (i = 0; i < n; ++i)
+				{
+					js_getindex(J, -1, i);
+					marks[i].loc = try_location(J);
+					js_pop(J, 1);
+				}
+			}
+			js_pop(J, 1);
+		}
+	}
+
+	js_freestate(J);
+}
+
+static void save_history(void)
+{
+	js_State *J;
+	char absname[PATH_MAX];
+	fz_output *out = NULL;
+	const char *json;
+	int i;
+
+	fz_var(out);
+
+	if (!doc)
+		return;
+
+	if (!fz_realpath(filename, absname))
+		return;
+
+	J = js_newstate(NULL, NULL, 0);
+
+	if (!read_history_file_as_json(J))
+		return;
+
+	js_newobject(J);
+	{
+		push_location(J, currentpage);
+		js_setproperty(J, -2, "current");
+
+		js_newarray(J);
+		for (i = 0; i < history_count; ++i)
+		{
+			push_location(J, history[i].loc);
+			js_setindex(J, -2, i);
+		}
+		js_setproperty(J, -2, "history");
+
+		js_newarray(J);
+		for (i = 0; i < future_count; ++i)
+		{
+			push_location(J, future[i].loc);
+			js_setindex(J, -2, i);
+		}
+		js_setproperty(J, -2, "future");
+
+		js_newarray(J);
+		for (i = 0; i < (int)nelem(marks); ++i)
+		{
+			push_location(J, marks[i].loc);
+			js_setindex(J, -2, i);
+		}
+		js_setproperty(J, -2, "marks");
+	}
+	js_setproperty(J, -2, absname);
+
+	js_getglobal(J, "JSON");
+	js_getproperty(J, -1, "stringify");
+	js_pushnull(J);
+	js_copy(J, -4);
+	js_pushnull(J);
+	js_pushnumber(J, 0);
+	js_call(J, 3);
+	js_rot2pop1(J);
+	json = js_tostring(J, -1);
+
+	fz_try(ctx)
+	{
+		const char *history_file = get_history_filename();
+		if (strlen(history_file) > 0) {
+			out = fz_new_output_with_path(ctx, history_file, 0);
+			fz_write_string(ctx, out, json);
+			fz_write_byte(ctx, out, '\n');
+			fz_close_output(ctx, out);
+		}
+	}
+	fz_always(ctx)
+		fz_drop_output(ctx, out);
+	fz_catch(ctx)
+		fz_warn(ctx, "Can't write history file.");
+
+	js_freestate(J);
+}
+
+static int convert_to_accel_path(char outname[], char *absname, size_t len)
+{
+	char *tmpdir;
+	char *s;
+
+	tmpdir = getenv("TEMP");
+	if (!tmpdir)
+		tmpdir = getenv("TMP");
+	if (!tmpdir)
+		tmpdir = "/var/tmp";
+	if (!fz_is_directory(ctx, tmpdir))
+		tmpdir = "/tmp";
+
+	if (absname[0] == '/' || absname[0] == '\\')
+		++absname;
+
+	s = absname;
+	while (*s) {
+		if (*s == '/' || *s == '\\' || *s == ':')
+			*s = '%';
+		++s;
+	}
+
+	if (fz_snprintf(outname, len, "%s/%s.accel", tmpdir, absname) >= len)
+		return 0;
+	return 1;
+}
+
+static int get_accelerator_filename(char outname[], size_t len)
+{
+	char absname[PATH_MAX];
+	if (!fz_realpath(filename, absname))
+		return 0;
+	if (!convert_to_accel_path(outname, absname, len))
+		return 0;
+	return 1;
+}
+
+static void save_accelerator(void)
+{
+	char absname[PATH_MAX];
+
+	if (!doc)
+		return;
+	if (!fz_document_supports_accelerator(ctx, doc))
+		return;
+	if (!get_accelerator_filename(absname, sizeof(absname)))
+		return;
+
+	fz_save_accelerator(ctx, doc, absname);
+}
+
 static struct input search_input = { { 0 }, 0 };
-static char *search_needle = 0;
 static int search_dir = 1;
-static int search_page = -1;
-static int search_hit_page = -1;
-static int search_hit_count = 0;
-static fz_rect search_hit_bbox[500];
+static fz_location search_page = {-1, -1};
+static fz_location search_hit_page = {-1, -1};
+static int search_active = 0;
+char *search_needle = 0;
+int search_hit_count = 0;
+fz_quad search_hit_quads[5000];
 
-static unsigned int next_power_of_two(unsigned int n)
+static char *help_dialog_text =
+	"The middle mouse button (scroll wheel button) pans the document view. "
+	"The right mouse button selects a region and copies the marked text to the clipboard."
+	"\n"
+	"\n"
+	"F1 - show this message\n"
+	"i - show document information\n"
+	"o - show document outline\n"
+	"u - show undo history\n"
+	"a - show annotation editor\n"
+	"R - show redaction editor\n"
+	"L - highlight links\n"
+	"F - highlight form fields\n"
+	"r - reload file\n"
+	"S - save file (only for PDF)\n"
+	"q - quit\n"
+	"\n"
+	"< - decrease E-book font size\n"
+	"> - increase E-book font size\n"
+	"A - toggle anti-aliasing\n"
+	"I - toggle inverted color mode\n"
+	"C - toggle tinted color mode\n"
+	"E - toggle ICC color management\n"
+	"e - toggle spot color emulation\n"
+	"\n"
+	"f - fullscreen window\n"
+	"w - shrink wrap window\n"
+	"W - fit to width\n"
+	"H - fit to height\n"
+	"Z - fit to page\n"
+	"z - reset zoom\n"
+	"[number] z - set zoom resolution in DPI\n"
+	"plus - zoom in\n"
+	"minus - zoom out\n"
+	"[ - rotate counter-clockwise\n"
+	"] - rotate clockwise\n"
+	"arrow keys - scroll in small increments\n"
+	"h, j, k, l - scroll in small increments\n"
+	"\n"
+	"b - smart move backward\n"
+	"space - smart move forward\n"
+	"comma or page up - go backward\n"
+	"period or page down - go forward\n"
+	"g - go to first page\n"
+	"G - go to last page\n"
+	"[number] g - go to page number\n"
+	"\n"
+	"m - save current location in history\n"
+	"t - go backward in history\n"
+	"T - go forward in history\n"
+	"[number] m - save current location in numbered bookmark\n"
+	"[number] t - go to numbered bookmark\n"
+	"\n"
+	"/ - search for text forward\n"
+	"? - search for text backward\n"
+	"n - repeat search\n"
+	"N - repeat search in reverse direction"
+	;
+
+static void help_dialog(void)
 {
-	--n;
-	n |= n >> 1;
-	n |= n >> 2;
-	n |= n >> 4;
-	n |= n >> 8;
-	n |= n >> 16;
-	return ++n;
+	static int scroll;
+	ui_dialog_begin(ui.gridsize*20, ui.gridsize*40);
+	ui_layout(T, X, W, ui.padsize, ui.padsize);
+	ui_label("MuPDF %s", FZ_VERSION);
+	ui_spacer();
+	ui_layout(B, NONE, S, ui.padsize, ui.padsize);
+	if (ui_button("Okay") || ui.key == KEY_ENTER || ui.key == KEY_ESCAPE)
+		ui.dialog = NULL;
+	ui_spacer();
+	ui_layout(ALL, BOTH, CENTER, ui.padsize, ui.padsize);
+	ui_label_with_scrollbar(help_dialog_text, 0, 0, &scroll);
+	ui_dialog_end();
 }
 
-static void update_title(void)
+static char error_message[256];
+static void error_dialog(void)
 {
-	static char buf[256];
-	size_t n = strlen(title);
+	ui_dialog_begin(ui.gridsize*20, (ui.gridsize+ui.padsize*2)*4);
+	ui_layout(T, NONE, NW, ui.padsize, ui.padsize);
+	ui_label("%C %s", 0x1f4a3, error_message); /* BOMB */
+	ui_layout(B, NONE, S, ui.padsize, ui.padsize);
+	if (ui_button("Quit") || ui.key == KEY_ENTER || ui.key == KEY_ESCAPE || ui.key == 'q')
+		glutLeaveMainLoop();
+	ui_dialog_end();
+}
+void ui_show_error_dialog(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	fz_vsnprintf(error_message, sizeof error_message, fmt, ap);
+	va_end(ap);
+	ui.dialog = error_dialog;
+}
+
+static char warning_message[256];
+static void warning_dialog(void)
+{
+	ui_dialog_begin(ui.gridsize*20, (ui.gridsize+ui.padsize*2)*4);
+	ui_layout(T, NONE, NW, ui.padsize, ui.padsize);
+	ui_label("%C %s", 0x26a0, warning_message); /* WARNING SIGN */
+	ui_layout(B, NONE, S, ui.padsize, ui.padsize);
+	if (ui_button("Okay") || ui.key == KEY_ENTER || ui.key == KEY_ESCAPE)
+		ui.dialog = NULL;
+	ui_dialog_end();
+}
+void ui_show_warning_dialog(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	fz_vsnprintf(warning_message, sizeof warning_message, fmt, ap);
+	va_end(ap);
+	ui.dialog = warning_dialog;
+}
+
+static void quit_dialog(void)
+{
+	ui_dialog_begin(ui.gridsize*20, (ui.gridsize+ui.padsize*2)*3);
+	ui_layout(T, NONE, NW, ui.padsize, ui.padsize);
+	ui_label("%C The document has unsaved changes. Are you sure you want to quit?", 0x26a0); /* WARNING SIGN */
+	ui_layout(B, X, S, ui.padsize, ui.padsize);
+	ui_panel_begin(0, ui.gridsize, 0, 0, 0);
+	{
+		ui_layout(R, NONE, S, 0, 0);
+		if (ui_button("Save"))
+			do_save_pdf_file();
+		ui_spacer();
+		if (ui_button("Discard") || ui.key == 'q')
+			glutLeaveMainLoop();
+		ui_layout(L, NONE, S, 0, 0);
+		if (ui_button("Cancel") || ui.key == KEY_ESCAPE)
+			ui.dialog = NULL;
+	}
+	ui_panel_end();
+	ui_dialog_end();
+}
+
+static void quit(void)
+{
+	if (pdf && pdf_has_unsaved_changes(ctx, pdf))
+		ui.dialog = quit_dialog;
+	else
+		glutLeaveMainLoop();
+}
+
+static void reload_dialog(void)
+{
+	ui_dialog_begin(ui.gridsize*20, (ui.gridsize+ui.padsize*2)*3);
+	ui_layout(T, NONE, NW, ui.padsize, ui.padsize);
+	ui_label("%C The document has unsaved changes. Are you sure you want to reload?", 0x26a0); /* WARNING SIGN */
+	ui_layout(B, X, S, ui.padsize, ui.padsize);
+	ui_panel_begin(0, ui.gridsize, 0, 0, 0);
+	{
+		ui_layout(R, NONE, S, 0, 0);
+		if (ui_button("Save"))
+			do_save_pdf_file();
+		ui_spacer();
+		if (ui_button("Reload") || ui.key == 'q')
+		{
+			ui.dialog = NULL;
+			reload_document();
+		}
+		ui_layout(L, NONE, S, 0, 0);
+		if (ui_button("Cancel") || ui.key == KEY_ESCAPE)
+			ui.dialog = NULL;
+	}
+	ui_panel_end();
+	ui_dialog_end();
+}
+
+void reload(void)
+{
+	if (pdf && pdf_has_unsaved_changes(ctx, pdf))
+		ui.dialog = reload_dialog;
+	else
+		reload_document();
+}
+
+void trace_action(const char *fmt, ...)
+{
+	va_list args;
+	if (trace_file)
+	{
+		va_start(args, fmt);
+		fz_write_vprintf(ctx, trace_file, fmt, args);
+		fz_flush_output(ctx, trace_file);
+		va_end(args);
+		va_start(args, fmt);
+		fz_write_vprintf(ctx, fz_stdout(ctx), fmt, args);
+		fz_flush_output(ctx, fz_stdout(ctx));
+		va_end(args);
+	}
+}
+
+void trace_page_update(void)
+{
+	trace_action("page.update();\n");
+}
+
+void trace_save_snapshot(void)
+{
+	static int trace_idx = 1;
+	trace_action("page.toPixmap(Identity, DeviceRGB).saveAsPNG(\"trace-%03d.png\");\n", trace_idx++);
+}
+
+static int document_shown_as_dirty = 0;
+
+void update_title(void)
+{
+	char buf[256];
+	char *title = "MuPDF/GL";
+	char *extra = "";
+	size_t n;
+
+	int nc = fz_count_chapters(ctx, doc);
+
+	title = strrchr(filename, '/');
+	if (!title)
+		title = strrchr(filename, '\\');
+	if (title)
+		++title;
+	else
+		title = filename;
+
+	document_shown_as_dirty = pdf && pdf_has_unsaved_changes(ctx, pdf);
+	if (document_shown_as_dirty)
+		extra = "*";
+
+	n = strlen(title);
 	if (n > 50)
-		sprintf(buf, "...%s - %d / %d", title + n - 50, currentpage + 1, fz_count_pages(ctx, doc));
-	else
-		sprintf(buf, "%s - %d / %d", title, currentpage + 1, fz_count_pages(ctx, doc));
-	glfwSetWindowTitle(window, buf);
-}
-
-void texture_from_pixmap(struct texture *tex, fz_pixmap *pix)
-{
-	if (!tex->id)
-		glGenTextures(1, &tex->id);
-	glBindTexture(GL_TEXTURE_2D, tex->id);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-
-	tex->x = pix->x;
-	tex->y = pix->y;
-	tex->w = pix->w;
-	tex->h = pix->h;
-
-	if (has_ARB_texture_non_power_of_two)
 	{
-		if (tex->w > max_texture_size || tex->h > max_texture_size)
-			fz_warn(ctx, "texture size (%d x %d) exceeds implementation limit (%d)", tex->w, tex->h, max_texture_size);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tex->w, tex->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix->samples);
-		tex->s = 1;
-		tex->t = 1;
+		if (nc == 1)
+			sprintf(buf, "...%s%s - %d/%d", title + n - 50, extra, currentpage.page + 1, fz_count_pages(ctx, doc));
+		else
+			sprintf(buf, "...%s%s - %d/%d - %d/%d", title + n - 50, extra,
+				currentpage.chapter + 1, nc,
+				currentpage.page + 1, fz_count_chapter_pages(ctx, doc, currentpage.chapter));
 	}
 	else
 	{
-		int w2 = next_power_of_two(tex->w);
-		int h2 = next_power_of_two(tex->h);
-		if (w2 > max_texture_size || h2 > max_texture_size)
-			fz_warn(ctx, "texture size (%d x %d) exceeds implementation limit (%d)", w2, h2, max_texture_size);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w2, h2, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex->w, tex->h, GL_RGBA, GL_UNSIGNED_BYTE, pix->samples);
-		tex->s = (float)tex->w / w2;
-		tex->t = (float)tex->h / h2;
+		if (nc == 1)
+			sprintf(buf, "%s%s - %d/%d", title, extra, currentpage.page + 1, fz_count_pages(ctx, doc));
+		else
+
+			sprintf(buf, "%s%s - %d/%d - %d/%d", title, extra,
+				currentpage.chapter + 1, nc,
+				currentpage.page + 1, fz_count_chapter_pages(ctx, doc, currentpage.chapter));
 	}
+	glutSetWindowTitle(buf);
+	glutSetIconTitle(buf);
 }
 
-void render_page(void)
+void transform_page(void)
 {
-	fz_annot *annot;
-	fz_pixmap *pix;
+	draw_page_ctm = fz_transform_page(page_bounds, currentzoom, currentrotate);
+	draw_page_bounds = fz_transform_rect(page_bounds, draw_page_ctm);
+}
 
-	fz_scale(&page_ctm, currentzoom / 72, currentzoom / 72);
-	fz_pre_rotate(&page_ctm, -currentrotate);
-	fz_invert_matrix(&page_inv_ctm, &page_ctm);
+static void clear_selected_annot(void)
+{
+	/* clear all editor selections */
+	if (ui.selected_annot && pdf_annot_type(ctx, ui.selected_annot) == PDF_ANNOT_WIDGET)
+		pdf_annot_event_blur(ctx, ui.selected_annot);
+	ui_select_annot(NULL);
+}
 
-	fz_drop_page(ctx, page);
+void load_page(void)
+{
+	fz_irect area;
 
-	page = fz_load_page(ctx, doc, currentpage);
+	clear_selected_annot();
 
+	if (trace_file)
+		trace_action("page = doc.loadPage(%d);\n", fz_page_number_from_location(ctx, doc, currentpage));
+
+	fz_drop_stext_page(ctx, page_text);
+	page_text = NULL;
+	fz_drop_separations(ctx, seps);
+	seps = NULL;
 	fz_drop_link(ctx, links);
 	links = NULL;
-	links = fz_load_links(ctx, page);
+	fz_drop_page(ctx, fzpage);
+	fzpage = NULL;
 
-	pix = fz_new_pixmap_from_page_contents(ctx, page, &page_ctm, fz_device_rgb(ctx));
-	texture_from_pixmap(&page_tex, pix);
-	fz_drop_pixmap(ctx, pix);
+	fzpage = fz_load_chapter_page(ctx, doc, currentpage.chapter, currentpage.page);
+	if (pdf)
+		page = (pdf_page*)fzpage;
 
-	annot_count = 0;
-	for (annot = fz_first_annot(ctx, page); annot; annot = fz_next_annot(ctx, page, annot))
+	if (trace_file)
 	{
-		pix = fz_new_pixmap_from_annot(ctx, page, annot, &page_ctm, fz_device_rgb(ctx));
-		texture_from_pixmap(&annot_tex[annot_count++], pix);
-		fz_drop_pixmap(ctx, pix);
+		pdf_annot *w;
+		int i, s;
+
+		for (i = 0, s = 0, w = pdf_first_widget(ctx, page); w != NULL; i++, w = pdf_next_widget(ctx, w))
+			if (pdf_widget_type(ctx, w) == PDF_WIDGET_TYPE_SIGNATURE)
+			{
+				int is_signed;
+
+				s++;
+				trace_action("widget = page.getWidgets()[%d];\n", i);
+				trace_action("widgetstr = 'Signature %d on page %d';\n",
+					s, fz_page_number_from_location(ctx, doc, currentpage));
+
+				is_signed = pdf_widget_is_signed(ctx, w);
+				trace_action("tmp = widget.isSigned();\n");
+				trace_action("if (tmp != %d)\n", is_signed);
+				trace_action("  throw new RegressionError(widgetstr, 'is signed:', tmp|0, 'expected:', %d);\n", is_signed);
+
+				if (is_signed)
+				{
+					int valid_until, is_readonly;
+					char *cert_error, *digest_error;
+					pdf_pkcs7_distinguished_name *dn;
+					pdf_pkcs7_verifier *verifier;
+					char *signatory = NULL;
+					char buf[500];
+
+					valid_until = pdf_validate_signature(ctx, w);
+					is_readonly = pdf_widget_is_readonly(ctx, w);
+					verifier = pkcs7_openssl_new_verifier(ctx);
+					cert_error = pdf_signature_error_description(pdf_check_widget_certificate(ctx, verifier, w));
+					digest_error = pdf_signature_error_description(pdf_check_widget_digest(ctx, verifier, w));
+					dn = pdf_signature_get_widget_signatory(ctx, verifier, w);
+					if (dn)
+					{
+						char *s = pdf_signature_format_distinguished_name(ctx, dn);
+						fz_strlcpy(buf, s, sizeof buf);
+						fz_free(ctx, s);
+						pdf_signature_drop_distinguished_name(ctx, dn);
+					}
+					else
+					{
+						fz_strlcpy(buf, "Signature information missing.", sizeof buf);
+					}
+					signatory = &buf[0];
+					pdf_drop_verifier(ctx, verifier);
+
+					trace_action("tmp = widget.validateSignature();\n");
+					trace_action("if (tmp != %d)\n", valid_until);
+					trace_action("  throw new RegressionError(widgetstr, 'valid until:', tmp, 'expected:', %d);\n", valid_until);
+					trace_action("tmp = widget.isReadOnly();\n");
+					trace_action("if (tmp != %d)\n", is_readonly);
+					trace_action("  throw new RegressionError(widgetstr, 'is read-only:', tmp, 'expected:', %d);\n", is_readonly);
+					trace_action("tmp = widget.checkCertificate();\n");
+					trace_action("if (tmp != '%s')\n", cert_error);
+					trace_action("  throw new RegressionError(widgetstr, 'is read-only:', tmp, 'expected:', %d);\n", cert_error);
+					trace_action("tmp = widget.checkDigest();\n");
+					trace_action("if (tmp != %q)\n", digest_error);
+					trace_action("  throw new RegressionError(widgetstr, 'digest error:', tmp, 'expected:', %q);\n", digest_error);
+					trace_action("tmp = widget.getSignatory();\n");
+					trace_action("if (tmp != '%s')\n", signatory);
+					trace_action("  throw new RegressionError(widgetstr, 'signatory:', '[', tmp, ']', 'expected:', '[', %q, ']');\n", signatory);
+				}
+			}
 	}
 
+	links = fz_load_links(ctx, fzpage);
+	page_text = fz_new_stext_page_from_page(ctx, fzpage, NULL);
+
+	if (currenticc)
+		fz_enable_icc(ctx);
+	else
+		fz_disable_icc(ctx);
+
+	if (currentseparations)
+	{
+		seps = fz_page_separations(ctx, fzpage);
+		if (seps)
+		{
+			int i, n = fz_count_separations(ctx, seps);
+			for (i = 0; i < n; i++)
+				fz_set_separation_behavior(ctx, seps, i, FZ_SEPARATION_COMPOSITE);
+		}
+		else if (fz_page_uses_overprint(ctx, fzpage))
+			seps = fz_new_separations(ctx, 0);
+		else if (fz_document_output_intent(ctx, doc))
+			seps = fz_new_separations(ctx, 0);
+	}
+
+	/* compute bounds here for initial window size */
+	page_bounds = fz_bound_page(ctx, fzpage);
+	transform_page();
+
+	area = fz_irect_from_rect(draw_page_bounds);
+	page_tex.w = area.x1 - area.x0;
+	page_tex.h = area.y1 - area.y0;
+
+	page_contents_changed = 1;
+}
+
+static void render_page(void)
+{
+	fz_irect bbox;
+	fz_pixmap *pix;
+	fz_device *dev;
+
+	transform_page();
+
+	fz_set_aa_level(ctx, currentaa);
+
+	if (page_contents_changed)
+	{
+		fz_drop_pixmap(ctx, page_contents);
+		page_contents = NULL;
+
+		bbox = fz_round_rect(fz_transform_rect(fz_bound_page(ctx, fzpage), draw_page_ctm));
+		page_contents = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), bbox, seps, 0);
+		fz_clear_pixmap(ctx, page_contents);
+
+		dev = fz_new_draw_device(ctx, draw_page_ctm, page_contents);
+		fz_run_page_contents(ctx, fzpage, dev, fz_identity, NULL);
+		fz_close_device(ctx, dev);
+		fz_drop_device(ctx, dev);
+	}
+
+	pix = fz_clone_pixmap_area_with_different_seps(ctx, page_contents, NULL, fz_device_rgb(ctx), NULL, fz_default_color_params, NULL);
+	{
+		dev = fz_new_draw_device(ctx, draw_page_ctm, pix);
+		fz_run_page_annots(ctx, fzpage, dev, fz_identity, NULL);
+		fz_run_page_widgets(ctx, fzpage, dev, fz_identity, NULL);
+		fz_close_device(ctx, dev);
+		fz_drop_device(ctx, dev);
+	}
+
+	if (currentinvert)
+	{
+		fz_invert_pixmap_luminance(ctx, pix);
+		fz_gamma_pixmap(ctx, pix, 1 / 1.4f);
+	}
+	if (currenttint)
+	{
+		fz_tint_pixmap(ctx, pix, tint_black, tint_white);
+	}
+
+	ui_texture_from_pixmap(&page_tex, pix);
+
+	fz_drop_pixmap(ctx, pix);
+
+	FZ_LOG_DUMP_STORE(ctx, "Store state after page render:\n");
+}
+
+void render_page_if_changed(void)
+{
+	if (pdf)
+	{
+		if (pdf_update_page(ctx, page))
+		{
+			trace_page_update();
+			page_annots_changed = 1;
+		}
+	}
+
+	if (oldpage.chapter != currentpage.chapter ||
+		oldpage.page != currentpage.page ||
+		oldzoom != currentzoom ||
+		oldrotate != currentrotate ||
+		oldinvert != currentinvert ||
+		oldtint != currenttint ||
+		oldicc != currenticc ||
+		oldseparations != currentseparations ||
+		oldaa != currentaa)
+	{
+		page_contents_changed = 1;
+	}
+
+	if (page_contents_changed || page_annots_changed)
+	{
+		render_page();
+		oldpage = currentpage;
+		oldzoom = currentzoom;
+		oldrotate = currentrotate;
+		oldinvert = currentinvert;
+		oldtint = currenttint;
+		oldicc = currenticc;
+		oldseparations = currentseparations;
+		oldaa = currentaa;
+		page_contents_changed = 0;
+		page_annots_changed = 0;
+	}
+}
+
+static struct mark save_mark()
+{
+	struct mark mark;
+	mark.loc = currentpage;
+	mark.scroll = fz_transform_point_xy(scroll_x, scroll_y, view_page_inv_ctm);
+	return mark;
+}
+
+static void restore_mark(struct mark mark)
+{
+	currentpage = mark.loc;
+	mark.scroll = fz_transform_point(mark.scroll, draw_page_ctm);
+	scroll_x = mark.scroll.x;
+	scroll_y = mark.scroll.y;
+}
+
+static int eqloc(fz_location a, fz_location b)
+{
+	return a.chapter == b.chapter && a.page == b.page;
+}
+
+int search_has_results(void)
+{
+	return !search_active && eqloc(search_hit_page, currentpage) && search_hit_count > 0;
+}
+
+static int is_first_page(fz_location loc)
+{
+	return (loc.chapter == 0 && loc.page == 0);
+}
+
+static int is_last_page(fz_location loc)
+{
+	fz_location last = fz_last_page(ctx, doc);
+	return (loc.chapter == last.chapter && loc.page == last.page);
 }
 
 static void push_history(void)
 {
-	if (history_count + 1 >= nelem(history))
+	if (history_count > 0 && eqloc(history[history_count-1].loc, currentpage))
+		return;
+	if (history_count + 1 >= (int)nelem(history))
 	{
 		memmove(history, history + 1, sizeof *history * (nelem(history) - 1));
-		history[history_count] = currentpage;
+		history[history_count] = save_mark();
 	}
 	else
 	{
-		history[history_count++] = currentpage;
+		history[history_count++] = save_mark();
 	}
 }
 
 static void push_future(void)
 {
-	if (future_count + 1 >= nelem(future))
+	if (future_count + 1 >= (int)nelem(future))
 	{
 		memmove(future, future + 1, sizeof *future * (nelem(future) - 1));
-		future[future_count] = currentpage;
+		future[future_count] = save_mark();
 	}
 	else
 	{
-		future[future_count++] = currentpage;
+		future[future_count++] = save_mark();
 	}
 }
 
@@ -306,253 +1110,226 @@ static void clear_future(void)
 	future_count = 0;
 }
 
-static void jump_to_page(int newpage)
+static void jump_to_location(fz_location loc)
 {
-	newpage = fz_clampi(newpage, 0, fz_count_pages(ctx, doc) - 1);
 	clear_future();
 	push_history();
-	currentpage = newpage;
+	currentpage = fz_clamp_location(ctx, doc, loc);
+	push_history();
+}
+
+static void jump_to_location_xy(fz_location loc, float x, float y)
+{
+	fz_point p = fz_transform_point_xy(x, y, draw_page_ctm);
+	clear_future();
+	push_history();
+	currentpage = fz_clamp_location(ctx, doc, loc);
+	scroll_x = p.x;
+	scroll_y = p.y;
+	push_history();
+}
+
+static void jump_to_page(int newpage)
+{
+	clear_future();
+	push_history();
+	currentpage = fz_location_from_page_number(ctx, doc, newpage);
+	currentpage = fz_clamp_location(ctx, doc, currentpage);
+	push_history();
+}
+
+static void jump_to_page_xy(int newpage, float x, float y)
+{
+	fz_point p = fz_transform_point_xy(x, y, draw_page_ctm);
+	clear_future();
+	push_history();
+	currentpage = fz_location_from_page_number(ctx, doc, newpage);
+	currentpage = fz_clamp_location(ctx, doc, currentpage);
+	scroll_x = p.x;
+	scroll_y = p.y;
 	push_history();
 }
 
 static void pop_history(void)
 {
-	int here = currentpage;
+	fz_location here = currentpage;
 	push_future();
-	while (history_count > 0 && currentpage == here)
-		currentpage = history[--history_count];
+	while (history_count > 0 && eqloc(currentpage, here))
+		restore_mark(history[--history_count]);
 }
 
 static void pop_future(void)
 {
-	int here = currentpage;
+	fz_location here = currentpage;
 	push_history();
-	while (future_count > 0 && currentpage == here)
-		currentpage = future[--future_count];
+	while (future_count > 0 && eqloc(currentpage, here))
+		restore_mark(future[--future_count]);
 	push_history();
 }
 
-static void do_copy_region(fz_rect *screen_sel, int xofs, int yofs)
+static void relayout(void)
 {
-	fz_buffer *buf;
-	fz_rect page_sel;
-
-	xofs -= page_tex.x;
-	yofs -= page_tex.y;
-
-	page_sel.x0 = screen_sel->x0 - xofs;
-	page_sel.y0 = screen_sel->y0 - yofs;
-	page_sel.x1 = screen_sel->x1 - xofs;
-	page_sel.y1 = screen_sel->y1 - yofs;
-
-	fz_transform_rect(&page_sel, &page_inv_ctm);
-
-#ifdef _WIN32
-	buf = fz_new_buffer_from_page(ctx, page, &page_sel, 1);
-#else
-	buf = fz_new_buffer_from_page(ctx, page, &page_sel, 0);
-#endif
-	fz_write_buffer_rune(ctx, buf, 0);
-	glfwSetClipboardString(window, (char*)buf->data);
-	fz_drop_buffer(ctx, buf);
-}
-
-static void ui_label_draw(int x0, int y0, int x1, int y1, const char *text)
-{
-	glColor4f(1, 1, 1, 1);
-	glRectf(x0, y0, x1, y1);
-	glColor4f(0, 0, 0, 1);
-	ui_draw_string(ctx, x0 + 2, y0 + 2 + ui.baseline, text);
-}
-
-static void ui_scrollbar(int x0, int y0, int x1, int y1, int *value, int page_size, int max)
-{
-	static float saved_top = 0;
-	static int saved_ui_y = 0;
-	float top;
-
-	int total_h = y1 - y0;
-	int thumb_h = fz_maxi(x1 - x0, total_h * page_size / max);
-	int avail_h = total_h - thumb_h;
-
-	max -= page_size;
-
-	if (max <= 0)
+	if (layout_em < 6) layout_em = 6;
+	if (layout_em > 36) layout_em = 36;
+	if (fz_is_document_reflowable(ctx, doc))
 	{
-		*value = 0;
-		glColor4f(0.6f, 0.6f, 0.6f, 1.0f);
-		glRectf(x0, y0, x1, y1);
-		return;
+		fz_bookmark mark = fz_make_bookmark(ctx, doc, currentpage);
+		fz_layout_document(ctx, doc, layout_w, layout_h, layout_em);
+		currentpage = fz_lookup_bookmark(ctx, doc, mark);
+		history_count = 0;
+		future_count = 0;
+
+		load_page();
+		update_title();
 	}
+}
 
-	top = (float) *value * avail_h / max;
-
-	if (ui.down && !ui.active)
+static int count_outline(fz_outline *node, int end)
+{
+	int is_selected, n, p;
+	int count = 0;
+	while (node)
 	{
-		if (ui.x >= x0 && ui.x < x1 && ui.y >= y0 && ui.y < y1)
+		p = node->page;
+		count += 1;
+		n = end;
+		if (node->next && node->next->page >= 0)
+			n = node->next->page;
+		is_selected = 0;
+		if (fz_count_chapters(ctx, doc) == 1)
+			is_selected = (p>=0) && (currentpage.page == p || (currentpage.page > p && currentpage.page < n));
+		if (node->down && (node->is_open || is_selected))
+			count += count_outline(node->down, end);
+		node = node->next;
+	}
+	return count;
+}
+
+static void do_outline_imp(struct list *list, int end, fz_outline *node, int depth)
+{
+	int is_selected, was_open, n;
+
+	while (node)
+	{
+		int p = node->page;
+		n = end;
+		if (node->next && node->next->page >= 0)
+			n = node->next->page;
+
+		was_open = node->is_open;
+		is_selected = 0;
+		if (fz_count_chapters(ctx, doc) == 1)
+			is_selected = (p>=0) && (currentpage.page == p || (currentpage.page > p && currentpage.page < n));
+		if (ui_tree_item(list, node, node->title, is_selected, depth, !!node->down, &node->is_open))
 		{
-			if (ui.y < top)
+			if (p < 0)
 			{
-				ui.active = "pgdn";
-				*value -= page_size;
-			}
-			else if (ui.y >= top + thumb_h)
-			{
-				ui.active = "pgup";
-				*value += page_size;
+				currentpage = fz_resolve_link(ctx, doc, node->uri, &node->x, &node->y);
+				jump_to_location_xy(currentpage, node->x, node->y);
 			}
 			else
 			{
-				ui.hot = value;
-				ui.active = value;
-				saved_top = top;
-				saved_ui_y = ui.y;
+				jump_to_page_xy(p, node->x, node->y);
 			}
 		}
-	}
 
-	if (ui.active == value)
-	{
-		*value = (saved_top + ui.y - saved_ui_y) * max / avail_h;
-	}
-
-	if (*value < 0)
-		*value = 0;
-	else if (*value > max)
-		*value = max;
-
-	top = (float) *value * avail_h / max;
-
-	glColor4f(0.6f, 0.6f, 0.6f, 1.0f);
-	glRectf(x0, y0, x1, y1);
-	glColor4f(0.8f, 0.8f, 0.8f, 1.0f);
-	glRectf(x0, top, x1, top + thumb_h);
-}
-
-static int measure_outline_height(fz_outline *node)
-{
-	int h = 0;
-	while (node)
-	{
-		h += ui.lineheight;
-		if (node->down)
-			h += measure_outline_height(node->down);
+		if (node->down && (was_open || is_selected))
+			do_outline_imp(list, n, node->down, depth + 1);
 		node = node->next;
 	}
-	return h;
 }
 
-static int do_outline_imp(fz_outline *node, int end, int x0, int x1, int x, int y)
+static void do_outline(fz_outline *node)
 {
-	int h = 0;
-	int p = currentpage;
-	int n = end;
-
-	while (node)
-	{
-		if (node->dest.kind == FZ_LINK_GOTO)
-		{
-			p = node->dest.ld.gotor.page;
-
-			if (ui.x >= x0 && ui.x < x1 && ui.y >= y + h && ui.y < y + h + ui.lineheight)
-			{
-				ui.hot = node;
-				if (!ui.active && ui.down)
-				{
-					ui.active = node;
-					jump_to_page(p);
-					ui_needs_update = 1; /* we changed the current page, so force a redraw */
-				}
-			}
-
-			n = end;
-			if (node->next && node->next->dest.kind == FZ_LINK_GOTO)
-			{
-				n = node->next->dest.ld.gotor.page;
-			}
-			if (currentpage == p || (currentpage > p && currentpage < n))
-			{
-				glColor4f(0.9f, 0.9f, 0.9f, 1.0f);
-				glRectf(x0, y + h, x1, y + h + ui.lineheight);
-			}
-		}
-
-		glColor4f(0, 0, 0, 1);
-		ui_draw_string(ctx, x, y + h + ui.baseline, node->title);
-		h += ui.lineheight;
-		if (node->down)
-			h += do_outline_imp(node->down, n, x0, x1, x + ui.lineheight, y + h);
-
-		node = node->next;
-	}
-	return h;
+	static struct list list;
+	ui_layout(L, BOTH, NW, 0, 0);
+	ui_tree_begin(&list, count_outline(node, 65535), outline_w, 0, 1);
+	do_outline_imp(&list, 65535, node, 0);
+	ui_tree_end(&list);
 }
 
-static void do_outline(fz_outline *node, int outline_w)
+static void do_undo(void)
 {
-	static char *id = "outline";
-	static int outline_scroll_y = 0;
-	static int saved_outline_scroll_y = 0;
-	static int saved_ui_y = 0;
+	static struct list list;
+	int count = 0;
+	int pos;
+	int i;
+	int desired = -1;
 
-	int outline_h;
-	int total_h;
+	if (pdf)
+		pos = pdf_undoredo_state(ctx, pdf, &count);
+	else
+		pos = 0;
+	ui_layout(L, BOTH, NW, 0, 0);
+	ui_panel_begin(outline_w, 0, ui.padsize*2, ui.padsize*2, 1);
+	ui_layout(T, X, NW, ui.padsize, ui.padsize);
+	ui_label("Undo history:");
 
-	outline_w -= ui.lineheight;
-	outline_h = window_h;
-	total_h = measure_outline_height(outline);
+	ui_layout(B, X, NW, ui.padsize, ui.padsize);
+	if (ui_button_aux("Redo", pos == count))
+		desired = pos+1;
+	if (ui_button_aux("Undo", pos == 0))
+		desired = pos-1;
 
-	if (ui.x >= 0 && ui.x < outline_w && ui.y >= 0 && ui.y < outline_h)
+	ui_layout(ALL, BOTH, NW, ui.padsize, ui.padsize);
+	ui_list_begin(&list, count+1, 0, ui.lineheight * 4 + 4);
+
+	for (i = 0; i < count+1; i++)
 	{
-		ui.hot = id;
-		if (!ui.active && ui.middle)
+		const char *op;
+
+		if (i == 0)
+			op = "Original Document";
+		else
+			op = pdf_undoredo_step(ctx, pdf, i-1);
+		if (ui_list_item(&list, (void *)(intptr_t)(i+1), op, i <= pos))
 		{
-			ui.active = id;
-			saved_ui_y = ui.y;
-			saved_outline_scroll_y = outline_scroll_y;
+			desired = i;
 		}
 	}
 
-	if (ui.active == id)
-		outline_scroll_y = saved_outline_scroll_y + (saved_ui_y - ui.y) * 5;
+	ui_list_end(&list);
 
-	if (ui.hot == id)
-		outline_scroll_y -= ui.scroll_y * ui.lineheight * 3;
+	if (desired != -1 && desired != pos)
+	{
+		page_contents_changed = 1;
+		while (pos > desired)
+		{
+			trace_action("doc.undo();\n");
+			pdf_undo(ctx, pdf);
+			pos--;
+		}
+		while (pos < desired)
+		{
+			trace_action("doc.redo();\n");
+			pdf_redo(ctx, pdf);
+			pos++;
+		}
+		clear_selected_annot();
+		load_page();
+	}
 
-	ui_scrollbar(outline_w, 0, outline_w+ui.lineheight, outline_h, &outline_scroll_y, outline_h, total_h);
-
-	glScissor(0, 0, outline_w, outline_h);
-	glEnable(GL_SCISSOR_TEST);
-
-	glColor4f(1, 1, 1, 1);
-	glRectf(0, 0, outline_w, outline_h);
-
-	do_outline_imp(outline, fz_count_pages(ctx, doc), 0, outline_w, 10, -outline_scroll_y);
-
-	glDisable(GL_SCISSOR_TEST);
+	ui_panel_end();
 }
 
-static void do_links(fz_link *link, int xofs, int yofs)
+static void do_links(fz_link *link)
 {
-	fz_rect r;
-	float x, y;
-
-	x = ui.x;
-	y = ui.y;
-
-	xofs -= page_tex.x;
-	yofs -= page_tex.y;
+	fz_rect bounds;
+	fz_irect area;
+	float link_x, link_y;
 
 	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 	glEnable(GL_BLEND);
 
 	while (link)
 	{
-		r = link->rect;
-		fz_transform_rect(&r, &page_ctm);
+		bounds = link->rect;
+		bounds = fz_transform_rect(link->rect, view_page_ctm);
+		area = fz_irect_from_rect(bounds);
 
-		if (x >= xofs + r.x0 && x < xofs + r.x1 && y >= yofs + r.y0 && y < yofs + r.y1)
+		if (ui_mouse_inside(area))
 		{
+			tooltip = link->uri;
 			ui.hot = link;
 			if (!ui.active && ui.down)
 				ui.active = link;
@@ -566,19 +1343,21 @@ static void do_links(fz_link *link, int xofs, int yofs)
 				glColor4f(0, 0, 1, 0.2f);
 			else
 				glColor4f(0, 0, 1, 0.1f);
-			glRectf(xofs + r.x0, yofs + r.y0, xofs + r.x1, yofs + r.y1);
+			glRectf(area.x0, area.y0, area.x1, area.y1);
 		}
 
 		if (ui.active == link && !ui.down)
 		{
 			if (ui.hot == link)
 			{
-				if (link->dest.kind == FZ_LINK_GOTO)
-					jump_to_page(link->dest.ld.gotor.page);
-				else if (link->dest.kind == FZ_LINK_URI)
-					open_browser(link->dest.ld.uri.uri);
+				if (fz_is_external_link(ctx, link->uri))
+					open_browser(link->uri);
+				else
+				{
+					fz_location loc = fz_resolve_link(ctx, doc, link->uri, &link_x, &link_y);
+					jump_to_location_xy(loc, link_x, link_y);
+				}
 			}
-			ui_needs_update = 1;
 		}
 
 		link = link->next;
@@ -587,141 +1366,451 @@ static void do_links(fz_link *link, int xofs, int yofs)
 	glDisable(GL_BLEND);
 }
 
-static void do_page_selection(int x0, int y0, int x1, int y1)
+static void do_page_selection(void)
 {
-	static fz_rect sel;
+	static fz_point pt = { 0, 0 };
+	static fz_quad hits[1000];
+	fz_rect rect;
+	int i, n;
 
-	if (ui.x >= x0 && ui.x < x1 && ui.y >= y0 && ui.y < y1)
+	if (ui_mouse_inside(view_page_area))
 	{
-		ui.hot = &sel;
+		ui.hot = &pt;
 		if (!ui.active && ui.right)
 		{
-			ui.active = &sel;
-			sel.x0 = sel.x1 = ui.x;
-			sel.y0 = sel.y1 = ui.y;
+			ui.active = &pt;
+			pt.x = ui.x;
+			pt.y = ui.y;
 		}
 	}
 
-	if (ui.active == &sel)
+	if (ui.active == &pt)
 	{
-		sel.x1 = ui.x;
-		sel.y1 = ui.y;
+		fz_point page_a = { pt.x, pt.y };
+		fz_point page_b = { ui.x, ui.y };
+
+		page_a = fz_transform_point(page_a, view_page_inv_ctm);
+		page_b = fz_transform_point(page_b, view_page_inv_ctm);
+
+		if (ui.mod == GLUT_ACTIVE_CTRL)
+			fz_snap_selection(ctx, page_text, &page_a, &page_b, FZ_SELECT_WORDS);
+		else if (ui.mod == GLUT_ACTIVE_CTRL + GLUT_ACTIVE_SHIFT)
+			fz_snap_selection(ctx, page_text, &page_a, &page_b, FZ_SELECT_LINES);
+
+		if (ui.mod == GLUT_ACTIVE_SHIFT)
+		{
+			rect = fz_make_rect(
+					fz_min(page_a.x, page_b.x),
+					fz_min(page_a.y, page_b.y),
+					fz_max(page_a.x, page_b.x),
+					fz_max(page_a.y, page_b.y));
+			n = 1;
+			hits[0] = fz_quad_from_rect(rect);
+		}
+		else
+		{
+			n = fz_highlight_selection(ctx, page_text, page_a, page_b, hits, nelem(hits));
+		}
 
 		glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ZERO); /* invert destination color */
 		glEnable(GL_BLEND);
 
 		glColor4f(1, 1, 1, 1);
-		glRectf(sel.x0, sel.y0, sel.x1 + 1, sel.y1 + 1);
+		glBegin(GL_QUADS);
+		for (i = 0; i < n; ++i)
+		{
+			fz_quad thit = fz_transform_quad(hits[i], view_page_ctm);
+			glVertex2f(thit.ul.x, thit.ul.y);
+			glVertex2f(thit.ur.x, thit.ur.y);
+			glVertex2f(thit.lr.x, thit.lr.y);
+			glVertex2f(thit.ll.x, thit.ll.y);
+		}
+		glEnd();
 
 		glDisable(GL_BLEND);
-	}
 
-	if (ui.active == &sel && !ui.right)
-	{
-		do_copy_region(&sel, x0, y0);
-		ui_needs_update = 1;
+		if (!ui.right)
+		{
+			char *s;
+#ifdef _WIN32
+			if (ui.mod == GLUT_ACTIVE_SHIFT)
+				s = fz_copy_rectangle(ctx, page_text, rect, 1);
+			else
+				s = fz_copy_selection(ctx, page_text, page_a, page_b, 1);
+#else
+			if (ui.mod == GLUT_ACTIVE_SHIFT)
+				s = fz_copy_rectangle(ctx, page_text, rect, 0);
+			else
+				s = fz_copy_selection(ctx, page_text, page_a, page_b, 0);
+#endif
+			ui_set_clipboard(s);
+			fz_free(ctx, s);
+		}
 	}
 }
 
-static void do_search_hits(int xofs, int yofs)
+static void do_search_hits(void)
 {
-	fz_rect r;
 	int i;
-
-	xofs -= page_tex.x;
-	yofs -= page_tex.y;
 
 	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 	glEnable(GL_BLEND);
 
+	glColor4f(1, 0, 0, 0.4f);
+	glBegin(GL_QUADS);
 	for (i = 0; i < search_hit_count; ++i)
 	{
-		r = search_hit_bbox[i];
-
-		fz_transform_rect(&r, &page_ctm);
-
-		glColor4f(1, 0, 0, 0.4f);
-		glRectf(xofs + r.x0, yofs + r.y0, xofs + r.x1, yofs + r.y1);
+		fz_quad thit = fz_transform_quad(search_hit_quads[i], view_page_ctm);
+		glVertex2f(thit.ul.x, thit.ul.y);
+		glVertex2f(thit.ur.x, thit.ur.y);
+		glVertex2f(thit.lr.x, thit.lr.y);
+		glVertex2f(thit.ll.x, thit.ll.y);
 	}
 
+	glEnd();
 	glDisable(GL_BLEND);
-}
-
-static void do_forms(float xofs, float yofs)
-{
-	pdf_ui_event event;
-	fz_point p;
-	int i;
-
-	for (i = 0; i < annot_count; ++i)
-		ui_draw_image(&annot_tex[i], xofs - page_tex.x, yofs - page_tex.y);
-
-	if (!pdf || search_active)
-		return;
-
-	p.x = xofs - page_tex.x + ui.x;
-	p.y = xofs - page_tex.x + ui.y;
-	fz_transform_point(&p, &page_inv_ctm);
-
-	if (ui.down && !ui.active)
-	{
-		event.etype = PDF_EVENT_TYPE_POINTER;
-		event.event.pointer.pt = p;
-		event.event.pointer.ptype = PDF_POINTER_DOWN;
-		if (pdf_pass_event(ctx, pdf, (pdf_page*)page, &event))
-		{
-			if (pdf->focus)
-				ui.active = do_forms;
-			pdf_update_page(ctx, pdf, (pdf_page*)page);
-			render_page();
-			ui_needs_update = 1;
-		}
-	}
-	else if (ui.active == do_forms && !ui.down)
-	{
-		ui.active = NULL;
-		event.etype = PDF_EVENT_TYPE_POINTER;
-		event.event.pointer.pt = p;
-		event.event.pointer.ptype = PDF_POINTER_UP;
-		if (pdf_pass_event(ctx, pdf, (pdf_page*)page, &event))
-		{
-			pdf_update_page(ctx, pdf, (pdf_page*)page);
-			render_page();
-			ui_needs_update = 1;
-		}
-	}
 }
 
 static void toggle_fullscreen(void)
 {
-#if 0
-	static int oldw = 100, oldh = 100, oldx = 0, oldy = 0;
-
+	static int win_x = 0, win_y = 0;
+	static int win_w = 100, win_h = 100;
 	if (!isfullscreen)
 	{
-		oldw = glutGet(GLUT_WINDOW_WIDTH);
-		oldh = glutGet(GLUT_WINDOW_HEIGHT);
-		oldx = glutGet(GLUT_WINDOW_X);
-		oldy = glutGet(GLUT_WINDOW_Y);
+		win_w = glutGet(GLUT_WINDOW_WIDTH);
+		win_h = glutGet(GLUT_WINDOW_HEIGHT);
+		win_x = glutGet(GLUT_WINDOW_X);
+		win_y = glutGet(GLUT_WINDOW_Y);
 		glutFullScreen();
 		isfullscreen = 1;
 	}
 	else
 	{
-		glutPositionWindow(oldx, oldy);
-		glutReshapeWindow(oldw, oldh);
+		glutPositionWindow(win_x, win_y);
+		glutReshapeWindow(win_w, win_h);
 		isfullscreen = 0;
 	}
-#endif
 }
 
 static void shrinkwrap(void)
 {
-	int w = fz_mini(page_tex.w + canvas_x, screen_w - SCREEN_FURNITURE_W);
-	int h = fz_mini(page_tex.h + canvas_y, screen_h - SCREEN_FURNITURE_H);
+	int w = page_tex.w;
+	if (showoutline || showundo)
+		w += outline_w + 4;
+	if (showannotate)
+		w += annotate_w;
+	int h = page_tex.h;
+	if (screen_w > 0 && w > screen_w)
+		w = screen_w;
+	if (screen_h > 0 && h > screen_h)
+		h = screen_h;
 	if (isfullscreen)
 		toggle_fullscreen();
-	glfwSetWindowSize(window, w, h);
+	glutReshapeWindow(w, h);
+}
+
+static struct input input_password;
+static void password_dialog(void)
+{
+	int is;
+	ui_dialog_begin(ui.gridsize*16, (ui.gridsize+ui.padsize*2)*3);
+	{
+		ui_layout(T, X, NW, ui.padsize, ui.padsize);
+		ui_label("Password:");
+		is = ui_input(&input_password, 200, 1);
+
+		ui_layout(B, X, NW, ui.padsize, ui.padsize);
+		ui_panel_begin(0, ui.gridsize, 0, 0, 0);
+		{
+			ui_layout(R, NONE, S, 0, 0);
+			if (ui_button("Cancel") || (!ui.focus && ui.key == KEY_ESCAPE))
+				glutLeaveMainLoop();
+			ui_spacer();
+			if (ui_button("Okay") || is == UI_INPUT_ACCEPT)
+			{
+				password = input_password.text;
+				ui.dialog = NULL;
+				reload_document();
+				shrinkwrap();
+			}
+		}
+		ui_panel_end();
+	}
+	ui_dialog_end();
+}
+
+/* Parse "chapter:page" from anchor. "chapter:" is also accepted,
+ * meaning first page. Return 1 if parsing succeeded, 0 if failed.
+ */
+static int
+parse_location(const char *anchor, fz_location *loc)
+{
+	const char *s, *p;
+
+	if (anchor == NULL)
+		return 0;
+
+	s = anchor;
+	while (*s >= '0' && *s <= '9')
+		s++;
+	loc->chapter = fz_atoi(anchor)-1;
+	if (*s == 0)
+	{
+		*loc = fz_location_from_page_number(ctx, doc, loc->chapter);
+		return 1;
+	}
+	if (*s != ':')
+		return 0;
+	p = ++s;
+	while (*s >= '0' && *s <= '9')
+		s++;
+	if (s == p)
+		loc->page = 0;
+	else
+		loc->page = fz_atoi(p)-1;
+
+	return 1;
+}
+
+static void
+reload_or_start_journalling(fz_context *ctx, pdf_document *pdf)
+{
+	char journal[PATH_MAX];
+
+	fz_strlcpy(journal, filename, sizeof(journal));
+	fz_strlcat(journal, ".journal", sizeof(journal));
+
+	fz_try(ctx)
+	{
+		/* Probe with fz_file_exists to avoid 'can't find' errors. */
+		if (fz_file_exists(ctx, journal))
+			pdf_load_journal(ctx, pdf, journal);
+	}
+	fz_catch(ctx)
+	{
+		/* Ignore any failures here. */
+	}
+	trace_action("doc.enableJournal();\n");
+	pdf_enable_journal(ctx, pdf);
+}
+
+static void alert_box(const char *fmt, const char *str)
+{
+#ifdef _WIN32
+	MessageBoxA(NULL, str, "MuPDF Alert", MB_ICONERROR);
+#else
+	fprintf(stderr, "MuPDF Alert: %s\n", str);
+#endif
+}
+
+
+static void event_cb(fz_context *ctx, pdf_document *doc, pdf_doc_event *evt, void *data)
+{
+	switch (evt->type)
+	{
+	case PDF_DOCUMENT_EVENT_ALERT:
+		{
+			pdf_alert_event *alert = pdf_access_alert_event(ctx, evt);
+			alert_box("%s", alert->message);
+		}
+		break;
+
+	default:
+		fz_throw(ctx, FZ_ERROR_GENERIC, "event not yet implemented");
+		break;
+	}
+}
+
+static void load_document(void)
+{
+	char accelpath[PATH_MAX];
+	char *accel = NULL;
+	time_t atime;
+	time_t dtime;
+	fz_location location;
+
+	fz_drop_outline(ctx, outline);
+	fz_drop_document(ctx, doc);
+
+	/* If there was an accelerator to load, what would it be called? */
+	if (get_accelerator_filename(accelpath, sizeof(accelpath)))
+	{
+		/* Check whether that file exists, and isn't older than
+		 * the document. */
+		atime = stat_mtime(accelpath);
+		dtime = stat_mtime(filename);
+		if (atime == 0)
+		{
+			/* No accelerator */
+		}
+		else if (atime > dtime)
+			accel = accelpath;
+		else
+		{
+			/* Accelerator data is out of date */
+			unlink(accelpath);
+			accel = NULL; /* In case we have jumped up from below */
+		}
+	}
+
+	trace_action("doc = new Document(%q);\n", filename);
+
+	doc = fz_open_accelerated_document(ctx, filename, accel);
+	pdf = pdf_specifics(ctx, doc);
+
+	if (pdf && trace_file)
+	{
+		int needspass = pdf_needs_password(ctx, pdf);
+		trace_action(
+				"tmp = doc.needsPassword();\n"
+				"if (tmp != %s)\n"
+				"  throw new RegressionError('Document password needed:', tmp, 'expected:', %s);\n",
+				needspass ? "true" : "false",
+				needspass ? "true" : "false");
+	}
+
+	if (fz_needs_password(ctx, doc))
+	{
+		int result = fz_authenticate_password(ctx, doc, password);
+
+		if (pdf && trace_file)
+		{
+			trace_action(
+					"tmp = doc.authenticatePassword(%q);\n"
+					"if (tmp != %s)\n"
+					"  throw new RegressionError('Open document with password %q result: %s', 'expected:', '%s');\n",
+					password,
+					result ? "true" : "false",
+					password,
+					!result ? "pass" : "fail",
+					result ? "pass" : "fail");
+		}
+
+		if (!result)
+		{
+			fz_drop_document(ctx, doc);
+			doc = NULL;
+			ui_input_init(&input_password, "");
+			ui.focus = &input_password;
+			ui.dialog = password_dialog;
+			return;
+		}
+	}
+
+	fz_layout_document(ctx, doc, layout_w, layout_h, layout_em);
+
+	fz_try(ctx)
+		outline = fz_load_outline(ctx, doc);
+	fz_catch(ctx)
+		outline = NULL;
+
+	load_history();
+
+	if (pdf)
+	{
+		if (enable_js)
+		{
+			trace_action("doc.enableJS();\n");
+			pdf_enable_js(ctx, pdf);
+		}
+
+		reload_or_start_journalling(ctx, pdf);
+
+		if (trace_file)
+		{
+			int vsns = pdf_count_versions(ctx, pdf);
+			trace_action(
+				"tmp = doc.countVersions();\n"
+				"if (tmp != %d)\n"
+				"  throw new RegressionError('Document versions:', tmp, 'expected:', %d);\n",
+				vsns, vsns);
+			if (vsns > 1)
+			{
+				int valid = pdf_validate_change_history(ctx, pdf);
+				trace_action("tmp = doc.validateChangeHistory();\n");
+				trace_action("if (tmp != %d)\n", valid);
+				trace_action("  throw new RegressionError('History validation:', tmp, 'expected:', %d);\n", valid);
+			}
+		}
+	}
+
+	if (anchor)
+	{
+		if (parse_location(anchor, &location))
+			jump_to_location(location);
+		else
+		{
+			location.chapter = 0;
+			if (pdf)
+				location.page = pdf_lookup_anchor(ctx, pdf, anchor, NULL, NULL);
+			else
+				location.page = -1;
+			if (location.page < 0)
+				location = fz_resolve_link(ctx, doc, anchor, NULL, NULL);
+			if (location.page < 0)
+				fz_warn(ctx, "cannot find location: %s", anchor);
+			else
+				jump_to_location(location);
+		}
+	}
+	anchor = NULL;
+
+	oldpage = currentpage = fz_clamp_location(ctx, doc, currentpage);
+
+	if (pdf)
+		pdf_set_doc_event_callback(ctx, pdf, event_cb, NULL, NULL);
+}
+
+static void reflow_document(void)
+{
+	char buf[256];
+	fz_document *new_doc;
+	fz_stext_options opts;
+
+	if (fz_is_document_reflowable(ctx, doc))
+		return;
+
+	fz_drop_outline(ctx, outline);
+
+	fz_parse_stext_options(ctx, &opts, reflow_options);
+
+	new_doc = fz_open_reflowed_document(ctx, doc, &opts);
+	fz_drop_document(ctx, doc);
+	doc = new_doc;
+	pdf = NULL;
+	page = NULL;
+
+	fz_layout_document(ctx, doc, layout_w, layout_h, layout_em);
+
+	fz_try(ctx)
+		outline = fz_load_outline(ctx, doc);
+	fz_catch(ctx)
+		outline = NULL;
+
+	fz_strlcpy(buf, filename, sizeof buf);
+	fz_snprintf(filename, sizeof filename, "%s.xhtml", buf);
+
+	load_history();
+
+	if (anchor)
+		jump_to_page(fz_atoi(anchor) - 1);
+	anchor = NULL;
+
+	currentpage = fz_clamp_location(ctx, doc, currentpage);
+}
+
+void reload_document(void)
+{
+	save_history();
+	save_accelerator();
+	load_document();
+	if (doc)
+	{
+		if (reflow_options)
+			reflow_document();
+		load_page();
+		update_title();
+	}
 }
 
 static void toggle_outline(void)
@@ -729,23 +1818,49 @@ static void toggle_outline(void)
 	if (outline)
 	{
 		showoutline = !showoutline;
-		if (showoutline)
-			canvas_x = ui.lineheight * 16;
-		else
-			canvas_x = 0;
+		showundo = 0;
 		if (canvas_w == page_tex.w && canvas_h == page_tex.h)
 			shrinkwrap();
 	}
 }
 
+static void toggle_undo(void)
+{
+	showundo = !showundo;
+	showoutline = 0;
+	if (canvas_w == page_tex.w && canvas_h == page_tex.h)
+		shrinkwrap();
+}
+
+void toggle_annotate(int mode)
+{
+	if (pdf)
+	{
+		if (showannotate != mode)
+			showannotate = mode;
+		else
+			showannotate = ANNOTATE_MODE_NONE;
+		if (canvas_w == page_tex.w && canvas_h == page_tex.h)
+			shrinkwrap();
+	}
+}
+
+static void set_zoom(int z, int cx, int cy)
+{
+	z = fz_clamp(z, MINRES, MAXRES);
+	scroll_x = (scroll_x + cx - canvas_x) * z / currentzoom - cx + canvas_x;
+	scroll_y = (scroll_y + cy - canvas_y) * z / currentzoom - cy + canvas_y;
+	currentzoom = z;
+}
+
 static void auto_zoom_w(void)
 {
-	currentzoom = fz_clamp(currentzoom * canvas_w / (float)page_tex.w, MINRES, MAXRES);
+	currentzoom = fz_clamp(currentzoom * canvas_w / page_tex.w, MINRES, MAXRES);
 }
 
 static void auto_zoom_h(void)
 {
-	currentzoom = fz_clamp(currentzoom * canvas_h / (float)page_tex.h, MINRES, MAXRES);
+	currentzoom = fz_clamp(currentzoom * canvas_h / page_tex.h, MINRES, MAXRES);
 }
 
 static void auto_zoom(void)
@@ -760,15 +1875,18 @@ static void auto_zoom(void)
 
 static void smart_move_backward(void)
 {
-	if (scroll_y <= 0)
+	int slop_x = page_tex.w / 20;
+	int slop_y = page_tex.h / 20;
+	if (scroll_y <= slop_y)
 	{
-		if (scroll_x <= 0)
+		if (scroll_x <= slop_x)
 		{
-			if (currentpage - 1 >= 0)
+			fz_location prev = fz_previous_page(ctx, doc, currentpage);
+			if (!eqloc(currentpage, prev))
 			{
-				scroll_x = page_tex.w;
-				scroll_y = page_tex.h;
-				currentpage -= 1;
+				scroll_x = (page_tex.w <= canvas_w) ? 0 : page_tex.w - canvas_w;
+				scroll_y = (page_tex.h <= canvas_h) ? 0 : page_tex.h - canvas_h;
+				currentpage = prev;
 			}
 		}
 		else
@@ -785,15 +1903,18 @@ static void smart_move_backward(void)
 
 static void smart_move_forward(void)
 {
-	if (scroll_y + canvas_h >= page_tex.h)
+	int slop_x = page_tex.w / 20;
+	int slop_y = page_tex.h / 20;
+	if (scroll_y + canvas_h >= page_tex.h - slop_y)
 	{
-		if (scroll_x + canvas_w >= page_tex.w)
+		if (scroll_x + canvas_w >= page_tex.w - slop_x)
 		{
-			if (currentpage + 1 < fz_count_pages(ctx, doc))
+			fz_location next = fz_next_page(ctx, doc, currentpage);
+			if (!eqloc(currentpage, next))
 			{
 				scroll_x = 0;
 				scroll_y = 0;
-				currentpage += 1;
+				currentpage = next;
 			}
 		}
 		else
@@ -808,26 +1929,100 @@ static void smart_move_forward(void)
 	}
 }
 
+static void clear_search(void)
+{
+	showsearch = 0;
+	search_page = currentpage;
+	search_hit_page = fz_make_location(-1, -1);
+	search_hit_count = 0;
+}
+
 static void do_app(void)
 {
-	if (ui.key == KEY_F4 && ui.mod == GLFW_MOD_ALT)
-		exit(0);
+	if (ui.mod == GLUT_ACTIVE_ALT)
+	{
+		if (ui.key == KEY_F4)
+			quit();
+
+		if (ui.key == KEY_LEFT)
+			ui.key = 't', ui.mod = 0, ui.plain = 1;
+		if (ui.key == KEY_RIGHT)
+			ui.key = 'T', ui.mod = 0, ui.plain = 1;
+	}
 
 	if (ui.down || ui.middle || ui.right || ui.key)
 		showinfo = 0;
 
-	if (!ui.focus && ui.key)
+	if (trace_file && ui.key == KEY_CTL_P)
+		trace_save_snapshot();
+
+	if (!ui.focus && ui.key && ui.plain)
 	{
 		switch (ui.key)
 		{
-		case 'q':
-			exit(0);
+		case KEY_ESCAPE: clear_search(); ui_select_annot(NULL); break;
+		case KEY_F1: ui.dialog = help_dialog; break;
+		case 'a': toggle_annotate(ANNOTATE_MODE_NORMAL); break;
+		case 'R': toggle_annotate(ANNOTATE_MODE_REDACT); break;
+		case 'o': toggle_outline(); break;
+		case 'u': toggle_undo(); break;
+		case 'L': showlinks = !showlinks; break;
+		case 'F': showform = !showform; break;
+		case 'i': showinfo = !showinfo; break;
+		case 'r': reload(); break;
+		case 'q': quit(); break;
+		case 'S': do_save_pdf_file(); break;
+
+		case '>': layout_em = number > 0 ? number : layout_em + 1; relayout(); break;
+		case '<': layout_em = number > 0 ? number : layout_em - 1; relayout(); break;
+
+		case 'C': currenttint = !currenttint; break;
+		case 'I': currentinvert = !currentinvert; break;
+		case 'e': currentseparations = !currentseparations; break;
+		case 'E': currenticc = !currenticc; break;
+		case 'f': toggle_fullscreen(); break;
+		case 'w': shrinkwrap(); break;
+		case 'W': auto_zoom_w(); break;
+		case 'H': auto_zoom_h(); break;
+		case 'Z': auto_zoom(); break;
+		case 'z': set_zoom(number > 0 ? number : DEFRES, canvas_w/2, canvas_h/2); break;
+		case '+': set_zoom(zoom_in(currentzoom), ui.x, ui.y); break;
+		case '-': set_zoom(zoom_out(currentzoom), ui.x, ui.y); break;
+		case '[': currentrotate -= 90; break;
+		case ']': currentrotate += 90; break;
+		case 'k': case KEY_UP: scroll_y -= canvas_h/10; break;
+		case 'j': case KEY_DOWN: scroll_y += canvas_h/10; break;
+		case 'h': case KEY_LEFT: scroll_x -= canvas_w/10; break;
+		case 'l': case KEY_RIGHT: scroll_x += canvas_w/10; break;
+
+		case 'b': number = fz_maxi(number, 1); while (number--) smart_move_backward(); break;
+		case ' ': number = fz_maxi(number, 1); while (number--) smart_move_forward(); break;
+		case 'g': jump_to_page(number - 1); break;
+		case 'G': jump_to_location(fz_last_page(ctx, doc)); break;
+
+		case ',': case KEY_PAGE_UP:
+			number = fz_maxi(number, 1);
+			while (number--)
+				currentpage = fz_previous_page(ctx, doc, currentpage);
 			break;
+		case '.': case KEY_PAGE_DOWN:
+			number = fz_maxi(number, 1);
+			while (number--)
+				currentpage = fz_next_page(ctx, doc, currentpage);
+			break;
+
+		case 'A':
+			if (number == 0)
+				currentaa = (currentaa == 8 ? 0 : 8);
+			else
+				currentaa = number;
+			break;
+
 		case 'm':
 			if (number == 0)
 				push_history();
-			else if (number > 0 && number < nelem(marks))
-				marks[number] = currentpage;
+			else if (number > 0 && number < (int)nelem(marks))
+				marks[number] = save_mark();
 			break;
 		case 't':
 			if (number == 0)
@@ -835,9 +2030,11 @@ static void do_app(void)
 				if (history_count > 0)
 					pop_history();
 			}
-			else if (number > 0 && number < nelem(marks))
+			else if (number > 0 && number < (int)nelem(marks))
 			{
-				jump_to_page(marks[number]);
+				struct mark mark = marks[number];
+				restore_mark(mark);
+				jump_to_location(mark.loc);
 			}
 			break;
 		case 'T':
@@ -847,61 +2044,59 @@ static void do_app(void)
 					pop_future();
 			}
 			break;
+
+		case '/':
+			clear_search();
+			search_dir = 1;
+			showsearch = 1;
+			ui.focus = &search_input;
+			search_input.p = search_input.text;
+			search_input.q = search_input.end;
+			break;
+		case '?':
+			clear_search();
+			search_dir = -1;
+			showsearch = 1;
+			ui.focus = &search_input;
+			search_input.p = search_input.text;
+			search_input.q = search_input.end;
+			break;
 		case 'N':
 			search_dir = -1;
-			if (search_hit_page == currentpage)
-				search_page = currentpage + search_dir;
-			else
-				search_page = currentpage;
-			if (search_page >= 0 && search_page < fz_count_pages(ctx, doc))
+			search_active = !!search_needle;
+			if (eqloc(search_hit_page, currentpage))
 			{
-				search_hit_page = -1;
-				if (search_needle)
-					search_active = 1;
+				search_page = fz_previous_page(ctx, doc, currentpage);
+				if (is_first_page(search_page))
+					search_active = 0;
 			}
+			else
+			{
+				search_page = currentpage;
+			}
+			search_hit_page = fz_make_location(-1, -1);
 			break;
 		case 'n':
 			search_dir = 1;
-			if (search_hit_page == currentpage)
-				search_page = currentpage + search_dir;
-			else
-				search_page = currentpage;
-			if (search_page >= 0 && search_page < fz_count_pages(ctx, doc))
+			search_active = !!search_needle;
+			if (eqloc(search_hit_page, currentpage))
 			{
-				search_hit_page = -1;
-				if (search_needle)
-					search_active = 1;
+				search_page = fz_next_page(ctx, doc, currentpage);
+				if (is_last_page(search_page))
+					search_active = 0;
 			}
+			else
+			{
+				search_page = currentpage;
+			}
+			search_hit_page = fz_make_location(-1, -1);
 			break;
-		case 'f': toggle_fullscreen(); break;
-		case 'w': shrinkwrap(); break;
-		case 'o': toggle_outline(); break;
-		case 'W': auto_zoom_w(); break;
-		case 'H': auto_zoom_h(); break;
-		case 'Z': auto_zoom(); break;
-		case 'z': currentzoom = number > 0 ? number : DEFRES; break;
-		case '<': currentpage -= 10 * fz_maxi(number, 1); break;
-		case '>': currentpage += 10 * fz_maxi(number, 1); break;
-		case ',': currentpage -= fz_maxi(number, 1); break;
-		case '.': currentpage += fz_maxi(number, 1); break;
-		case 'b': number = fz_maxi(number, 1); while (number--) smart_move_backward(); break;
-		case ' ': number = fz_maxi(number, 1); while (number--) smart_move_forward(); break;
-		case 'g': jump_to_page(number - 1); break;
-		case 'G': jump_to_page(fz_count_pages(ctx, doc) - 1); break;
-		case '+': currentzoom = zoom_in(currentzoom); break;
-		case '-': currentzoom = zoom_out(currentzoom); break;
-		case '[': currentrotate += 90; break;
-		case ']': currentrotate -= 90; break;
-		case 'l': showlinks = !showlinks; break;
-		case 'i': showinfo = !showinfo; break;
-		case '/': search_dir = 1; showsearch = 1; search_input.p = search_input.text; search_input.q = search_input.end; break;
-		case '?': search_dir = -1; showsearch = 1; search_input.p = search_input.text; search_input.q = search_input.end; break;
-		case KEY_UP: scroll_y -= 10; break;
-		case KEY_DOWN: scroll_y += 10; break;
-		case KEY_LEFT: scroll_x -= 10; break;
-		case KEY_RIGHT: scroll_x += 10; break;
-		case KEY_PAGE_UP: currentpage -= fz_maxi(number, 1); number = 0; break;
-		case KEY_PAGE_DOWN: currentpage += fz_maxi(number, 1); number = 0; break;
+		default:
+			if (ui.key < '0' || ui.key > '9')
+			{
+				number = 0;
+				return; /* unrecognized key, pass it through */
+			}
 		}
 
 		if (ui.key >= '0' && ui.key <= '9')
@@ -909,61 +2104,103 @@ static void do_app(void)
 		else
 			number = 0;
 
-		currentpage = fz_clampi(currentpage, 0, fz_count_pages(ctx, doc) - 1);
-		currentzoom = fz_clamp(currentzoom, MINRES, MAXRES);
+		currentpage = fz_clamp_location(ctx, doc, currentpage);
 		while (currentrotate < 0) currentrotate += 360;
 		while (currentrotate >= 360) currentrotate -= 360;
 
-		if (search_hit_page != currentpage)
-			search_hit_page = -1; /* clear highlights when navigating */
-
-		ui_needs_update = 1;
+		if (!eqloc(search_hit_page, currentpage))
+			search_hit_page = fz_make_location(-1, -1); /* clear highlights when navigating */
 
 		ui.key = 0; /* we ate the key event, so zap it */
 	}
 }
 
-static int do_info_line(int x, int y, char *label, char *text)
+typedef struct
 {
-	char buf[512];
-	snprintf(buf, sizeof buf, "%s: %s", label, text);
-	ui_draw_string(ctx, x, y, buf);
-	return y + ui.lineheight;
+	int max;
+	int len;
+	pdf_obj **sig;
+} sigs_list;
+
+static void
+process_sigs(fz_context *ctx_, pdf_obj *field, void *arg, pdf_obj **ft)
+{
+	sigs_list *sigs = (sigs_list *)arg;
+
+	if (!pdf_name_eq(ctx, pdf_dict_get(ctx, field, PDF_NAME(Type)), PDF_NAME(Annot)) ||
+		!pdf_name_eq(ctx, pdf_dict_get(ctx, field, PDF_NAME(Subtype)), PDF_NAME(Widget)) ||
+		!pdf_name_eq(ctx, pdf_dict_get(ctx, field, ft[0]), PDF_NAME(Sig)))
+		return;
+
+	if (sigs->len == sigs->max)
+	{
+		int newsize = sigs->max * 2;
+		if (newsize == 0)
+			newsize = 4;
+		sigs->sig = fz_realloc_array(ctx, sigs->sig, newsize, pdf_obj *);
+		sigs->max = newsize;
+	}
+
+	sigs->sig[sigs->len++] = field;
+}
+
+static char *short_signature_error_desc(pdf_signature_error err)
+{
+	switch (err)
+	{
+	case PDF_SIGNATURE_ERROR_OKAY:
+		return "OK";
+	case PDF_SIGNATURE_ERROR_NO_SIGNATURES:
+		return "No signatures";
+	case PDF_SIGNATURE_ERROR_NO_CERTIFICATE:
+		return "No certificate";
+	case PDF_SIGNATURE_ERROR_DIGEST_FAILURE:
+		return "Invalid";
+	case PDF_SIGNATURE_ERROR_SELF_SIGNED:
+		return "Self-signed";
+	case PDF_SIGNATURE_ERROR_SELF_SIGNED_IN_CHAIN:
+		return "Self-signed in chain";
+	case PDF_SIGNATURE_ERROR_NOT_TRUSTED:
+		return "Untrusted";
+	default:
+	case PDF_SIGNATURE_ERROR_UNKNOWN:
+		return "Unknown error";
+	}
 }
 
 static void do_info(void)
 {
-	char buf[256];
+	char buf[100];
+	pdf_document *pdoc = pdf_specifics(ctx, doc);
+	sigs_list list = { 0, 0, NULL };
 
-	int x = canvas_x + 4 * ui.lineheight;
-	int y = canvas_y + 4 * ui.lineheight;
-	int w = canvas_w - 8 * ui.lineheight;
-	int h = 7 * ui.lineheight;
-
-	glBegin(GL_TRIANGLE_STRIP);
+	if (pdoc)
 	{
-		glColor4f(0.9f, 0.9f, 0.9f, 1.0f);
-		glVertex2f(x, y);
-		glVertex2f(x, y + h);
-		glVertex2f(x + w, y);
-		glVertex2f(x + w, y + h);
+		static pdf_obj *ft_list[2] = { PDF_NAME(FT), NULL };
+		pdf_obj *ft;
+		pdf_obj *form_fields = pdf_dict_getp(ctx, pdf_trailer(ctx, pdoc), "Root/AcroForm/Fields");
+		pdf_walk_tree(ctx, form_fields, PDF_NAME(Kids), process_sigs, NULL, &list, &ft_list[0], &ft);
 	}
-	glEnd();
 
-	x += ui.lineheight;
-	y += ui.lineheight + ui.baseline;
+	ui_dialog_begin(ui.gridsize*20, (14+list.len) * ui.lineheight);
+	ui_layout(T, X, W, 0, 0);
 
-	glColor4f(0, 0, 0, 1);
 	if (fz_lookup_metadata(ctx, doc, FZ_META_INFO_TITLE, buf, sizeof buf) > 0)
-		y = do_info_line(x, y, "Title", buf);
+		ui_label("Title: %s", buf);
 	if (fz_lookup_metadata(ctx, doc, FZ_META_INFO_AUTHOR, buf, sizeof buf) > 0)
-		y = do_info_line(x, y, "Author", buf);
+		ui_label("Author: %s", buf);
 	if (fz_lookup_metadata(ctx, doc, FZ_META_FORMAT, buf, sizeof buf) > 0)
-		y = do_info_line(x, y, "Format", buf);
+		ui_label("Format: %s", buf);
 	if (fz_lookup_metadata(ctx, doc, FZ_META_ENCRYPTION, buf, sizeof buf) > 0)
-		y = do_info_line(x, y, "Encryption", buf);
-	if (pdf_specifics(ctx, doc))
+		ui_label("Encryption: %s", buf);
+	if (pdoc)
 	{
+		int updates = pdf_count_versions(ctx, pdoc);
+
+		if (fz_lookup_metadata(ctx, doc, FZ_META_INFO_CREATOR, buf, sizeof buf) > 0)
+			ui_label("PDF Creator: %s", buf);
+		if (fz_lookup_metadata(ctx, doc, FZ_META_INFO_PRODUCER, buf, sizeof buf) > 0)
+			ui_label("PDF Producer: %s", buf);
 		buf[0] = 0;
 		if (fz_has_permission(ctx, doc, FZ_PERMISSION_PRINT))
 			fz_strlcat(buf, "print, ", sizeof buf);
@@ -977,8 +2214,78 @@ static void do_info(void)
 			buf[strlen(buf)-2] = 0;
 		else
 			fz_strlcat(buf, "none", sizeof buf);
-		y = do_info_line(x, y, "Permissions", buf);
+		ui_label("Permissions: %s", buf);
+		ui_label("PDF %sdocument with %d update%s",
+			pdf_doc_was_linearized(ctx, pdoc) ? "linearized " : "",
+			updates, updates > 1 ? "s" : "");
+		if (updates > 0)
+		{
+			int n = pdf_validate_change_history(ctx, pdoc);
+			if (n == 0)
+				ui_label("Change history seems valid.");
+			else if (n == 1)
+				ui_label("Invalid changes made to the document in the last update.");
+			else if (n == 2)
+				ui_label("Invalid changes made to the document in the penultimate update.");
+			else
+				ui_label("Invalid changes made to the document %d updates ago.", n);
+		}
+
+		if (list.len)
+		{
+			int i;
+			for (i = 0; i < list.len; i++)
+			{
+				pdf_obj *field = list.sig[i];
+				fz_try(ctx)
+				{
+					if (pdf_signature_is_signed(ctx, pdf, field))
+					{
+						pdf_pkcs7_verifier *verifier = pkcs7_openssl_new_verifier(ctx);
+						pdf_signature_error sig_cert_error = pdf_check_certificate(ctx, verifier, pdf, field);
+						pdf_signature_error sig_digest_error = pdf_check_digest(ctx, verifier, pdf, field);
+						ui_label("Signature %d: CERT: %s, DIGEST: %s%s", i+1,
+							short_signature_error_desc(sig_cert_error),
+							short_signature_error_desc(sig_digest_error),
+								pdf_signature_incremental_change_since_signing(ctx, pdf, field) ? ", Changed since": "");
+
+						pdf_drop_verifier(ctx, verifier);
+					}
+					else
+						ui_label("Signature %d: Unsigned", i+1);
+				}
+				fz_catch(ctx)
+					ui_label("Signature %d: Error", i+1);
+			}
+			fz_free(ctx, list.sig);
+
+			if (updates == 0)
+				ui_label("No updates since document creation");
+			else
+			{
+				int n = pdf_validate_change_history(ctx, pdf);
+				if (n == 0)
+					ui_label("Document changes conform to permissions");
+				else
+					ui_label("Document permissions violated %d updates ago", n);
+			}
+		}
 	}
+	ui_label("Page: %d / %d", fz_page_number_from_location(ctx, doc, currentpage)+1, fz_count_pages(ctx, doc));
+	{
+		int w = (int)(page_bounds.x1 - page_bounds.x0 + 0.5f);
+		int h = (int)(page_bounds.y1 - page_bounds.y0 + 0.5f);
+		const char *size = paper_size_name(w, h);
+		if (!size)
+			size = paper_size_name(h, w);
+		if (size)
+			ui_label("Size: %d x %d (%s)", w, h, size);
+		else
+			ui_label("Size: %d x %d", w, h);
+	}
+	ui_label("ICC rendering: %s.", currenticc ? "on" : "off");
+	ui_label("Spot rendering: %s.", currentseparations ? "on" : "off");
+	ui_dialog_end();
 }
 
 static void do_canvas(void)
@@ -987,19 +2294,22 @@ static void do_canvas(void)
 	static int saved_scroll_y = 0;
 	static int saved_ui_x = 0;
 	static int saved_ui_y = 0;
+	fz_irect area;
+	int page_x, page_y;
 
-	float x, y;
+	tooltip = NULL;
 
-	if (oldpage != currentpage || oldzoom != currentzoom || oldrotate != currentrotate)
-	{
-		render_page();
-		update_title();
-		oldpage = currentpage;
-		oldzoom = currentzoom;
-		oldrotate = currentrotate;
-	}
+	ui_layout(ALL, BOTH, NW, 0, 0);
+	ui_pack_push(area = ui_pack(0, 0));
+	glScissor(area.x0, ui.window_h-area.y1, area.x1-area.x0, area.y1-area.y0);
+	glEnable(GL_SCISSOR_TEST);
 
-	if (ui.x >= canvas_x && ui.x < canvas_x + canvas_w && ui.y >= canvas_y && ui.y < canvas_y + canvas_h)
+	canvas_x = area.x0;
+	canvas_y = area.y0;
+	canvas_w = area.x1 - area.x0;
+	canvas_h = area.y1 - area.y0;
+
+	if (ui_mouse_inside(area))
 	{
 		ui.hot = doc;
 		if (!ui.active && ui.middle)
@@ -1014,9 +2324,19 @@ static void do_canvas(void)
 
 	if (ui.hot == doc)
 	{
-		scroll_x -= ui.scroll_x * ui.lineheight * 3;
-		scroll_y -= ui.scroll_y * ui.lineheight * 3;
+		if (ui.mod == 0)
+		{
+			scroll_x -= ui.scroll_x * ui.lineheight * 3;
+			scroll_y -= ui.scroll_y * ui.lineheight * 3;
+		}
+		else if (ui.mod == GLUT_ACTIVE_CTRL)
+		{
+			if (ui.scroll_y > 0) set_zoom(zoom_in(currentzoom), ui.x, ui.y);
+			if (ui.scroll_y < 0) set_zoom(zoom_out(currentzoom), ui.x, ui.y);
+		}
 	}
+
+	render_page_if_changed();
 
 	if (ui.active == doc)
 	{
@@ -1027,117 +2347,67 @@ static void do_canvas(void)
 	if (page_tex.w <= canvas_w)
 	{
 		scroll_x = 0;
-		x = canvas_x + (canvas_w - page_tex.w) / 2;
+		page_x = canvas_x + (canvas_w - page_tex.w) / 2;
 	}
 	else
 	{
 		scroll_x = fz_clamp(scroll_x, 0, page_tex.w - canvas_w);
-		x = canvas_x - scroll_x;
+		page_x = canvas_x - scroll_x;
 	}
 
 	if (page_tex.h <= canvas_h)
 	{
 		scroll_y = 0;
-		y = canvas_y + (canvas_h - page_tex.h) / 2;
+		page_y = canvas_y + (canvas_h - page_tex.h) / 2;
 	}
 	else
 	{
 		scroll_y = fz_clamp(scroll_y, 0, page_tex.h - canvas_h);
-		y = canvas_y - scroll_y;
+		page_y = canvas_y - scroll_y;
 	}
 
-	ui_draw_image(&page_tex, x - page_tex.x, y - page_tex.y);
+	view_page_ctm = draw_page_ctm;
+	view_page_ctm.e += page_x;
+	view_page_ctm.f += page_y;
+	view_page_inv_ctm = fz_invert_matrix(view_page_ctm);
+	view_page_bounds = fz_transform_rect(page_bounds, view_page_ctm);
+	view_page_area = fz_irect_from_rect(view_page_bounds);
 
-	do_forms(x, y);
-
-	if (!search_active)
-	{
-		do_links(links, x, y);
-		do_page_selection(x, y, x+page_tex.w, y+page_tex.h);
-		if (search_hit_page == currentpage && search_hit_count > 0)
-			do_search_hits(x, y);
-	}
-}
-
-static void run_main_loop(void)
-{
-	glViewport(0, 0, window_w, window_h);
-	glClearColor(0.3f, 0.3f, 0.3f, 1.0f);
-	glClear(GL_COLOR_BUFFER_BIT);
-
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
-	glOrtho(0, window_w, window_h, 0, -1, 1);
-
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-
-	ui_begin();
+	ui_draw_image(&page_tex, page_x, page_y);
 
 	if (search_active)
 	{
-		float start_time = glfwGetTime();
-
-		if (ui.key == KEY_ESCAPE)
-			search_active = 0;
-
-		/* ignore events during search */
-		ui.key = ui.mod = 0;
-		ui.down = ui.middle = ui.right = 0;
-
-		while (glfwGetTime() < start_time + 0.2)
-		{
-			search_hit_count = fz_search_page_number(ctx, doc, search_page, search_needle,
-					search_hit_bbox, nelem(search_hit_bbox));
-			if (search_hit_count)
-			{
-				search_active = 0;
-				search_hit_page = search_page;
-				jump_to_page(search_hit_page);
-				break;
-			}
-			else
-			{
-				search_page += search_dir;
-				if (search_page < 0 || search_page == fz_count_pages(ctx, doc))
-				{
-					search_active = 0;
-					break;
-				}
-			}
-		}
-
-		/* keep searching later */
-		if (search_active)
-			ui_needs_update = 1;
+		ui_layout(T, X, NW, 0, 0);
+		ui_panel_begin(0, ui.gridsize + ui.padsize*4, ui.padsize*2, ui.padsize*2, 1);
+		ui_layout(L, NONE, W, ui.padsize, 0);
+		ui_label("Searching chapter %d page %d...", search_page.chapter, search_page.page);
+		ui_panel_end();
 	}
+	else
+	{
+		if (pdf)
+		{
+			do_annotate_canvas(area);
+			do_widget_canvas(area);
+		}
+		do_links(links);
+		do_page_selection();
 
-	do_app();
-
-	canvas_w = window_w - canvas_x;
-	canvas_h = window_h - canvas_y;
-
-	do_canvas();
-
-	if (showinfo)
-		do_info();
-
-	if (showoutline)
-		do_outline(outline, canvas_x);
+		if (eqloc(search_hit_page, currentpage) && search_hit_count > 0)
+			do_search_hits();
+	}
 
 	if (showsearch)
 	{
-		int state = ui_input(canvas_x, 0, canvas_x + canvas_w, ui.lineheight+4, &search_input);
-		if (state == -1)
+		ui_layout(T, X, NW, 0, 0);
+		ui_panel_begin(0, ui.gridsize + ui.padsize*4, ui.padsize*2, ui.padsize*2, 1);
+		ui_layout(L, NONE, W, ui.padsize, 0);
+		ui_label("Search:");
+		ui_layout(ALL, X, E, ui.padsize, 0);
+		if (ui_input(&search_input, 0, 1) == UI_INPUT_ACCEPT)
 		{
-			ui.focus = NULL;
 			showsearch = 0;
-		}
-		else if (state == 1)
-		{
-			ui.focus = NULL;
-			showsearch = 0;
-			search_page = -1;
+			search_page = fz_make_location(-1, -1);
 			if (search_needle)
 			{
 				fz_free(ctx, search_needle);
@@ -1150,139 +2420,217 @@ static void run_main_loop(void)
 				search_page = currentpage;
 			}
 		}
-		ui_needs_update = 1;
+		if (ui.focus != &search_input)
+			showsearch = 0;
+		ui_panel_end();
 	}
 
+	if (tooltip)
+	{
+		ui_layout(B, X, N, 0, 0);
+		ui_panel_begin(0, ui.gridsize, ui.padsize*2, ui.padsize*2, 1);
+		ui_layout(L, NONE, W, ui.padsize, 0);
+		ui_label("%s", tooltip);
+		ui_panel_end();
+	}
+
+	ui_pack_pop();
+	glDisable(GL_SCISSOR_TEST);
+}
+
+void do_main(void)
+{
 	if (search_active)
 	{
-		char buf[256];
-		sprintf(buf, "Searching page %d of %d.", search_page + 1, fz_count_pages(ctx, doc));
-		ui_label_draw(canvas_x, 0, canvas_x + canvas_w, ui.lineheight+4, buf);
+		int start_time = glutGet(GLUT_ELAPSED_TIME);
+
+		if (ui.key == KEY_ESCAPE)
+			search_active = 0;
+
+		/* ignore events during search */
+		ui.key = ui.mod = ui.plain = 0;
+		ui.down = ui.middle = ui.right = 0;
+
+		while (search_active && glutGet(GLUT_ELAPSED_TIME) < start_time + 200)
+		{
+			search_hit_count = fz_search_chapter_page_number(ctx, doc,
+				search_page.chapter, search_page.page,
+				search_needle,
+				search_hit_quads, nelem(search_hit_quads));
+			trace_action("hits = doc.loadPage(%d).search(%q);\n", fz_page_number_from_location(ctx, doc, search_page), search_needle);
+			trace_action("print('Search page %d:', repr(%q), hits.length, repr(hits));\n", fz_page_number_from_location(ctx, doc, search_page), search_needle);
+			if (search_hit_count)
+			{
+				float search_hit_x = search_hit_quads[0].ul.x;
+				float search_hit_y = search_hit_quads[0].ul.y;
+				search_active = 0;
+				search_hit_page = search_page;
+				jump_to_location_xy(search_hit_page, search_hit_x, search_hit_y);
+			}
+			else
+			{
+				if (search_dir > 0)
+				{
+					if (is_last_page(search_page))
+						search_active = 0;
+					else
+						search_page = fz_next_page(ctx, doc, search_page);
+				}
+				else
+				{
+					if (is_first_page(search_page))
+						search_active = 0;
+					else
+						search_page = fz_previous_page(ctx, doc, search_page);
+				}
+			}
+		}
+
+		/* keep searching later */
+		if (search_active)
+			glutPostRedisplay();
 	}
 
+	do_app();
+
+	if (showoutline)
+		do_outline(outline);
+	else if (showundo)
+		do_undo();
+	if (showoutline || showundo)
+		ui_splitter(&outline_w, 6*ui.gridsize, 20*ui.gridsize, R);
+
+	if (!eqloc(oldpage, currentpage) || oldseparations != currentseparations || oldicc != currenticc)
+	{
+		load_page();
+		update_title();
+	}
+
+	if (showannotate)
+	{
+		ui_layout(R, BOTH, NW, 0, 0);
+		ui_panel_begin(annotate_w, 0, ui.padsize*2, ui.padsize*2, 1);
+		if (showannotate == ANNOTATE_MODE_NORMAL)
+			do_annotate_panel();
+		else
+			do_redact_panel();
+		ui_panel_end();
+	}
+
+	do_canvas();
+
+	if (showinfo)
+		do_info();
+
+	if (pdf)
+	{
+		if (document_shown_as_dirty != pdf_has_unsaved_changes(ctx, pdf))
+			update_title();
+	}
+}
+
+void run_main_loop(void)
+{
+	if (currentinvert)
+		glClearColor(0, 0, 0, 1);
+	else
+		glClearColor(0.3f, 0.3f, 0.3f, 1);
+	ui_begin();
+	fz_try(ctx)
+	{
+		if (ui.dialog)
+			ui.dialog();
+		else
+			do_main();
+	}
+	fz_catch(ctx)
+		ui_show_error_dialog("%s", fz_caught_message(ctx));
 	ui_end();
-
-	glfwSwapBuffers(window);
-
-	ogl_assert(ctx, "swap buffers");
 }
 
-static void on_char(GLFWwindow *window, unsigned int key, int mod)
+static void usage(const char *argv0)
 {
-	ui.key = key;
-	ui.mod = mod;
-	run_main_loop();
-	ui.key = ui.mod = 0;
-}
-
-static void on_key(GLFWwindow *window, int special, int scan, int action, int mod)
-{
-	if (action == GLFW_PRESS || action == GLFW_REPEAT)
-	{
-		ui.key = 0;
-		switch (special)
-		{
-#ifndef GLFW_MUPDF_FIXES
-		/* regular control characters: ^A, ^B, etc. */
-		default:
-			if (special >= 'A' && special <= 'Z' && mod == GLFW_MOD_CONTROL)
-				ui.key = KEY_CTL_A + special - 'A';
-			break;
-
-		/* regular control characters: escape, enter, backspace, tab */
-		case GLFW_KEY_ESCAPE: ui.key = KEY_ESCAPE; break;
-		case GLFW_KEY_ENTER: ui.key = KEY_ENTER; break;
-		case GLFW_KEY_BACKSPACE: ui.key = KEY_BACKSPACE; break;
-		case GLFW_KEY_TAB: ui.key = KEY_TAB; break;
-#endif
-		case GLFW_KEY_INSERT: ui.key = KEY_INSERT; break;
-		case GLFW_KEY_DELETE: ui.key = KEY_DELETE; break;
-		case GLFW_KEY_RIGHT: ui.key = KEY_RIGHT; break;
-		case GLFW_KEY_LEFT: ui.key = KEY_LEFT; break;
-		case GLFW_KEY_DOWN: ui.key = KEY_DOWN; break;
-		case GLFW_KEY_UP: ui.key = KEY_UP; break;
-		case GLFW_KEY_PAGE_UP: ui.key = KEY_PAGE_UP; break;
-		case GLFW_KEY_PAGE_DOWN: ui.key = KEY_PAGE_DOWN; break;
-		case GLFW_KEY_HOME: ui.key = KEY_HOME; break;
-		case GLFW_KEY_END: ui.key = KEY_END; break;
-		case GLFW_KEY_F1: ui.key = KEY_F1; break;
-		case GLFW_KEY_F2: ui.key = KEY_F2; break;
-		case GLFW_KEY_F3: ui.key = KEY_F3; break;
-		case GLFW_KEY_F4: ui.key = KEY_F4; break;
-		case GLFW_KEY_F5: ui.key = KEY_F5; break;
-		case GLFW_KEY_F6: ui.key = KEY_F6; break;
-		case GLFW_KEY_F7: ui.key = KEY_F7; break;
-		case GLFW_KEY_F8: ui.key = KEY_F8; break;
-		case GLFW_KEY_F9: ui.key = KEY_F9; break;
-		case GLFW_KEY_F10: ui.key = KEY_F10; break;
-		case GLFW_KEY_F11: ui.key = KEY_F11; break;
-		case GLFW_KEY_F12: ui.key = KEY_F12; break;
-		}
-		if (ui.key)
-		{
-			ui.mod = mod;
-			run_main_loop();
-			ui.key = ui.mod = 0;
-		}
-	}
-}
-
-static void on_mouse_button(GLFWwindow *window, int button, int action, int mod)
-{
-	switch (button)
-	{
-	case GLFW_MOUSE_BUTTON_LEFT: ui.down = (action == GLFW_PRESS); break;
-	case GLFW_MOUSE_BUTTON_MIDDLE: ui.middle = (action == GLFW_PRESS); break;
-	case GLFW_MOUSE_BUTTON_RIGHT: ui.right = (action == GLFW_PRESS); break;
-	}
-
-	run_main_loop();
-}
-
-static void on_mouse_motion(GLFWwindow *window, double x, double y)
-{
-	ui.x = x;
-	ui.y = y;
-	ui_needs_update = 1;
-}
-
-static void on_scroll(GLFWwindow *window, double x, double y)
-{
-	ui.scroll_x = x;
-	ui.scroll_y = y;
-	run_main_loop();
-	ui.scroll_x = ui.scroll_y = 0;
-}
-
-static void on_reshape(GLFWwindow *window, int w, int h)
-{
-	showinfo = 0;
-	window_w = w;
-	window_h = h;
-	ui_needs_update = 1;
-}
-
-static void on_display(GLFWwindow *window)
-{
-	ui_needs_update = 1;
-}
-
-static void on_error(int error, const char *msg)
-{
-	fprintf(stderr, "gl error %d: %s\n", error, msg);
-}
-
-static void usage(void)
-{
-	fprintf(stderr, "usage: mupdf [options] document [page]\n");
+	fprintf(stderr, "mupdf-gl version %s\n", FZ_VERSION);
+	fprintf(stderr, "usage: %s [options] document [page]\n", argv0);
 	fprintf(stderr, "\t-p -\tpassword\n");
 	fprintf(stderr, "\t-r -\tresolution\n");
+	fprintf(stderr, "\t-I\tinvert colors\n");
 	fprintf(stderr, "\t-W -\tpage width for EPUB layout\n");
 	fprintf(stderr, "\t-H -\tpage height for EPUB layout\n");
 	fprintf(stderr, "\t-S -\tfont size for EPUB layout\n");
 	fprintf(stderr, "\t-U -\tuser style sheet for EPUB layout\n");
+	fprintf(stderr, "\t-X\tdisable document styles for EPUB layout\n");
+	fprintf(stderr, "\t-J\tdisable javascript in PDF forms\n");
+	fprintf(stderr, "\t-A -\tset anti-aliasing level (0-8,9,10)\n");
+	fprintf(stderr, "\t-B -\tset black tint color (default: 303030)\n");
+	fprintf(stderr, "\t-C -\tset white tint color (default: FFFFF0)\n");
+	fprintf(stderr, "\t-Y -\tset the UI scaling factor\n");
+	fprintf(stderr, "\t-R -\tenable reflow and set the text extraction options\n");
+	fprintf(stderr, "\t\t\texample: -R dehyphenate,preserve-images\n");
 	exit(1);
 }
+
+static int document_filter(const char *fname)
+{
+	return !!fz_recognize_document(ctx, fname);
+}
+
+static void do_open_document_dialog(void)
+{
+	if (ui_open_file(filename, "Select a document to open:"))
+	{
+		ui.dialog = NULL;
+		if (filename[0] == 0)
+			glutLeaveMainLoop();
+		else
+		{
+			load_document();
+			if (doc)
+			{
+				if (reflow_options)
+					reflow_document();
+				load_page();
+				shrinkwrap();
+				update_title();
+			}
+		}
+	}
+}
+
+static void cleanup(void)
+{
+	save_history();
+	save_accelerator();
+
+	ui_finish();
+
+	fz_drop_pixmap(ctx, page_contents);
+	page_contents = NULL;
+#ifndef NDEBUG
+	if (fz_atoi(getenv("FZ_DEBUG_STORE")))
+		fz_debug_store(ctx, fz_stdout(ctx));
+#endif
+
+	trace_action("quit(0);\n");
+	fz_drop_output(ctx, trace_file);
+	fz_drop_stext_page(ctx, page_text);
+	fz_drop_separations(ctx, seps);
+	fz_drop_link(ctx, links);
+	fz_drop_page(ctx, fzpage);
+	fz_drop_outline(ctx, outline);
+	fz_drop_document(ctx, doc);
+	fz_drop_context(ctx);
+}
+
+int reloadrequested = 0;
+
+#ifndef _WIN32
+static void signal_handler(int signal)
+{
+	if (signal == SIGHUP)
+		reloadrequested = 1;
+}
+#endif
 
 #ifdef _MSC_VER
 int main_utf8(int argc, char **argv)
@@ -1290,146 +2638,158 @@ int main_utf8(int argc, char **argv)
 int main(int argc, char **argv)
 #endif
 {
-	const GLFWvidmode *video_mode;
-	char filename[2048];
-	char *password = "";
-	float layout_w = DEFAULT_LAYOUT_W;
-	float layout_h = DEFAULT_LAYOUT_H;
-	float layout_em = DEFAULT_LAYOUT_EM;
-	char *layout_css = NULL;
+	const char *trace_file_name = NULL;
+	float scale = 0;
 	int c;
 
-	while ((c = fz_getopt(argc, argv, "p:r:W:H:S:U:")) != -1)
+#ifndef _WIN32
+	signal(SIGHUP, signal_handler);
+#endif
+
+	glutInit(&argc, argv);
+
+	while ((c = fz_getopt(argc, argv, "p:r:IW:H:S:U:XJA:B:C:T:Y:R:")) != -1)
 	{
 		switch (c)
 		{
-		default: usage(); break;
+		default: usage(argv[0]); break;
 		case 'p': password = fz_optarg; break;
 		case 'r': currentzoom = fz_atof(fz_optarg); break;
+		case 'I': currentinvert = !currentinvert; break;
 		case 'W': layout_w = fz_atof(fz_optarg); break;
 		case 'H': layout_h = fz_atof(fz_optarg); break;
 		case 'S': layout_em = fz_atof(fz_optarg); break;
 		case 'U': layout_css = fz_optarg; break;
+		case 'X': layout_use_doc_css = 0; break;
+		case 'J': enable_js = !enable_js; break;
+		case 'A': currentaa = fz_atoi(fz_optarg); break;
+		case 'C': currenttint = 1; tint_white = strtol(fz_optarg, NULL, 16); break;
+		case 'B': currenttint = 1; tint_black = strtol(fz_optarg, NULL, 16); break;
+		case 'R': reflow_options = fz_optarg; break;
+		case 'T': trace_file_name = fz_optarg; break;
+		case 'Y': scale = fz_atof(fz_optarg); break;
 		}
 	}
 
+	screen_w = glutGet(GLUT_SCREEN_WIDTH) - SCREEN_FURNITURE_W;
+	screen_h = glutGet(GLUT_SCREEN_HEIGHT) - SCREEN_FURNITURE_H;
+
+	ui_init_dpi(scale);
+
+	oldzoom = currentzoom = DEFRES * ui.scale;
+
+	ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
+
+#ifdef _WIN32
+	/* stderr goes nowhere. Get us a debug stream we have a chance
+	 * of seeing. */
+	fz_set_stddbg(ctx, fz_stdods(ctx));
+#endif
+
+	fz_register_document_handlers(ctx);
+
+	if (trace_file_name)
+	{
+		if (!strcmp(trace_file_name, "-"))
+			trace_file = fz_stdout(ctx);
+		else
+			trace_file = fz_new_output_with_path(ctx, trace_file_name, 0);
+		trace_action("var doc, page, annot, widget, widgetstr, hits, tmp;\n");
+		trace_action("function RegressionError() {\n");
+		trace_action("  var err = new Error(Array.prototype.join.call(arguments, ' '));\n");
+		trace_action("	err.name = 'RegressionError';\n");
+		trace_action("	return err;\n");
+		trace_action("}\n");
+	}
+
+	if (layout_css)
+	{
+		fz_buffer *buf = fz_read_file(ctx, layout_css);
+		fz_set_user_css(ctx, fz_string_from_buffer(ctx, buf));
+		fz_drop_buffer(ctx, buf);
+	}
+	fz_set_use_document_css(ctx, layout_use_doc_css);
+
 	if (fz_optind < argc)
 	{
-		fz_strlcpy(filename, argv[fz_optind], sizeof filename);
+		fz_strlcpy(filename, argv[fz_optind++], sizeof filename);
+		if (fz_optind < argc)
+			anchor = argv[fz_optind++];
+		if (fz_optind < argc)
+			usage(argv[0]);
+
+		fz_try(ctx)
+		{
+			page_tex.w = 600;
+			page_tex.h = 700;
+			load_document();
+			if (doc)
+			{
+				if (reflow_options)
+					reflow_document();
+				load_page();
+			}
+		}
+		fz_always(ctx)
+		{
+			float sx = 1, sy = 1;
+			if (screen_w > 0 && page_tex.w > screen_w)
+				sx = (float)screen_w / page_tex.w;
+			if (screen_h > 0 && page_tex.h > screen_h)
+				sy = (float)screen_h / page_tex.h;
+			if (sy < sx)
+				sx = sy;
+			if (sx < 1)
+			{
+				fz_irect area;
+
+				currentzoom *= sx;
+				oldzoom = currentzoom;
+
+				/* compute bounds here for initial window size */
+				page_bounds = fz_bound_page(ctx, fzpage);
+				transform_page();
+
+				area = fz_irect_from_rect(draw_page_bounds);
+				page_tex.w = area.x1 - area.x0;
+				page_tex.h = area.y1 - area.y0;
+			}
+
+			ui_init(page_tex.w, page_tex.h, "MuPDF: Loading...");
+			ui_input_init(&search_input, "");
+		}
+		fz_catch(ctx)
+		{
+			ui_show_error_dialog("%s", fz_caught_message(ctx));
+		}
+
+		fz_try(ctx)
+		{
+			if (doc)
+				update_title();
+		}
+		fz_catch(ctx)
+		{
+			ui_show_error_dialog("%s", fz_caught_message(ctx));
+		}
 	}
 	else
 	{
 #ifdef _WIN32
 		win_install();
-		if (!win_open_file(filename, sizeof filename))
-			exit(0);
-#else
-		usage();
 #endif
+		ui_init(ui.gridsize * 26, ui.gridsize * 26, "MuPDF: Open document");
+		ui_input_init(&search_input, "");
+		ui_init_open_file(".", document_filter);
+		ui.dialog = do_open_document_dialog;
 	}
 
-	title = strrchr(filename, '/');
-	if (!title)
-		title = strrchr(filename, '\\');
-	if (title)
-		++title;
-	else
-		title = filename;
+	annotate_w *= ui.lineheight;
+	outline_w *= ui.lineheight;
 
-	memset(&ui, 0, sizeof ui);
+	glutMainLoop();
 
-	search_input.p = search_input.text;
-	search_input.q = search_input.p;
-	search_input.end = search_input.p;
-
-	if (!glfwInit()) {
-		fprintf(stderr, "cannot initialize glfw\n");
-		exit(1);
-	}
-
-	video_mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-	screen_w = video_mode->width;
-	screen_h = video_mode->height;
-
-	glfwSetErrorCallback(on_error);
-
-	window = glfwCreateWindow(DEFAULT_WINDOW_W, DEFAULT_WINDOW_H, filename, NULL, NULL);
-	if (!window) {
-		fprintf(stderr, "cannot create glfw window\n");
-		exit(1);
-	}
-
-	glfwMakeContextCurrent(window);
-
-	ctx = fz_new_context(NULL, NULL, 0);
-	fz_register_document_handlers(ctx);
-
-	if (layout_css)
-	{
-		fz_buffer *buf = fz_read_file(ctx, layout_css);
-		fz_write_buffer_byte(ctx, buf, 0);
-		fz_set_user_css(ctx, (char*)buf->data);
-		fz_drop_buffer(ctx, buf);
-	}
-
-	has_ARB_texture_non_power_of_two = glfwExtensionSupported("GL_ARB_texture_non_power_of_two");
-	if (!has_ARB_texture_non_power_of_two)
-		fz_warn(ctx, "OpenGL implementation does not support non-power of two texture sizes");
-
-	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
-
-	ui.fontsize = DEFAULT_UI_FONTSIZE;
-	ui.baseline = DEFAULT_UI_BASELINE;
-	ui.lineheight = DEFAULT_UI_LINEHEIGHT;
-
-	ui_init_fonts(ctx, ui.fontsize);
-
-	doc = fz_open_document(ctx, filename);
-	if (fz_needs_password(ctx, doc))
-	{
-		if (!fz_authenticate_password(ctx, doc, password))
-		{
-			fprintf(stderr, "Invalid password.\n");
-			exit(1);
-		}
-	}
-
-	outline = fz_load_outline(ctx, doc);
-	pdf = pdf_specifics(ctx, doc);
-	if (pdf)
-		pdf_enable_js(ctx, pdf);
-
-	fz_layout_document(ctx, doc, layout_w, layout_h, layout_em);
-
-	render_page();
-	update_title();
-	shrinkwrap();
-
-	glfwSetFramebufferSizeCallback(window, on_reshape);
-	glfwSetCursorPosCallback(window, on_mouse_motion);
-	glfwSetMouseButtonCallback(window, on_mouse_button);
-	glfwSetScrollCallback(window, on_scroll);
-	glfwSetCharModsCallback(window, on_char);
-	glfwSetKeyCallback(window, on_key);
-	glfwSetWindowRefreshCallback(window, on_display);
-
-	glfwGetFramebufferSize(window, &window_w, &window_h);
-
-	ui_needs_update = 1;
-
-	while (!glfwWindowShouldClose(window))
-	{
-		glfwWaitEvents();
-		if (ui_needs_update)
-			run_main_loop();
-	}
-
-	ui_finish_fonts(ctx);
-
-	fz_drop_link(ctx, links);
-	fz_drop_page(ctx, page);
-	fz_drop_document(ctx, doc);
-	fz_drop_context(ctx);
+	cleanup();
 
 	return 0;
 }
