@@ -39,12 +39,13 @@ void fz_new_colorspace_context(fz_context *ctx)
 {
 	fz_colorspace_context *cct;
 
-	fz_buffer* mono = NULL;
+	fz_buffer *mono = NULL;
 	fz_buffer *gray = NULL;
 	fz_buffer *rgb = NULL;
 	fz_buffer *cmyk = NULL;
 	fz_buffer *lab = NULL;
 
+	fz_var(mono);
 	fz_var(gray);
 	fz_var(rgb);
 	fz_var(cmyk);
@@ -64,7 +65,7 @@ void fz_new_colorspace_context(fz_context *ctx)
 		rgb = fz_new_buffer_from_shared_data(ctx, resources_icc_rgb_icc, resources_icc_rgb_icc_len);
 		cmyk = fz_new_buffer_from_shared_data(ctx, resources_icc_cmyk_icc, resources_icc_cmyk_icc_len);
 		lab = fz_new_buffer_from_shared_data(ctx, resources_icc_lab_icc, resources_icc_lab_icc_len);
-		cct->gray = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_MONO, FZ_COLORSPACE_IS_DEVICE, "DeviceMono", mono);
+		cct->mono = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_MONO, FZ_COLORSPACE_IS_DEVICE, "DeviceMono", mono);
 		cct->gray = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_GRAY, FZ_COLORSPACE_IS_DEVICE, "DeviceGray", gray);
 		cct->rgb = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_RGB, FZ_COLORSPACE_IS_DEVICE, "DeviceRGB", rgb);
 		cct->bgr = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_BGR, FZ_COLORSPACE_IS_DEVICE, "DeviceBGR", rgb);
@@ -73,6 +74,7 @@ void fz_new_colorspace_context(fz_context *ctx)
 	}
 	fz_always(ctx)
 	{
+		fz_drop_buffer(ctx, mono);
 		fz_drop_buffer(ctx, gray);
 		fz_drop_buffer(ctx, rgb);
 		fz_drop_buffer(ctx, cmyk);
@@ -103,7 +105,7 @@ void fz_new_colorspace_context(fz_context *ctx)
 	cct = ctx->colorspace = fz_malloc_struct(ctx, fz_colorspace_context);
 	cct->ctx_refs = 1;
 
-	cct->gray = fz_new_colorspace(ctx, FZ_COLORSPACE_MONO, FZ_COLORSPACE_IS_DEVICE, 1, "DeviceMono");
+	cct->mono = fz_new_colorspace(ctx, FZ_COLORSPACE_MONO, FZ_COLORSPACE_IS_DEVICE, 1, "DeviceMono");
 	cct->gray = fz_new_colorspace(ctx, FZ_COLORSPACE_GRAY, FZ_COLORSPACE_IS_DEVICE, 1, "DeviceGray");
 	cct->rgb = fz_new_colorspace(ctx, FZ_COLORSPACE_RGB, FZ_COLORSPACE_IS_DEVICE, 3, "DeviceRGB");
 	cct->bgr = fz_new_colorspace(ctx, FZ_COLORSPACE_BGR, FZ_COLORSPACE_IS_DEVICE, 3, "DeviceBGR");
@@ -296,6 +298,7 @@ int fz_colorspace_device_n_has_cmyk(fz_context *ctx, fz_colorspace *cs)
 int fz_is_valid_blend_colorspace(fz_context *ctx, fz_colorspace *cs)
 {
 	return cs == NULL ||
+		cs->type == FZ_COLORSPACE_MONO ||
 		cs->type == FZ_COLORSPACE_GRAY ||
 		cs->type == FZ_COLORSPACE_RGB ||
 		cs->type == FZ_COLORSPACE_CMYK;
@@ -440,6 +443,10 @@ fz_new_icc_colorspace(fz_context *ctx, enum fz_colorspace_type type, int flags, 
 				break;
 			}
 			break;
+		case FZ_COLORSPACE_MONO:
+			if (n != 1)
+				fz_throw(ctx, FZ_ERROR_SYNTAX, "ICC profile (N=%d) is not Gray", n);
+			break;
 		case FZ_COLORSPACE_GRAY:
 			if (n != 1)
 				fz_throw(ctx, FZ_ERROR_SYNTAX, "ICC profile (N=%d) is not Gray", n);
@@ -466,6 +473,7 @@ fz_new_icc_colorspace(fz_context *ctx, enum fz_colorspace_type type, int flags, 
 			switch (type)
 			{
 			default: fz_snprintf(name_buf, sizeof name_buf, "ICCBased(%d,%s)", n, cmm_name); break;
+			case FZ_COLORSPACE_MONO: fz_snprintf(name_buf, sizeof name_buf, "ICCBased(Gray,%s)", cmm_name); break;
 			case FZ_COLORSPACE_GRAY: fz_snprintf(name_buf, sizeof name_buf, "ICCBased(Gray,%s)", cmm_name); break;
 			case FZ_COLORSPACE_RGB: fz_snprintf(name_buf, sizeof name_buf, "ICCBased(RGB,%s)", cmm_name); break;
 			case FZ_COLORSPACE_BGR: fz_snprintf(name_buf, sizeof name_buf, "ICCBased(BGR,%s)", cmm_name); break;
@@ -577,6 +585,8 @@ const char *fz_colorspace_colorant(fz_context *ctx, fz_colorspace *cs, int i)
 	{
 	case FZ_COLORSPACE_NONE:
 		return "None";
+	case FZ_COLORSPACE_MONO:
+		return "Gray";
 	case FZ_COLORSPACE_GRAY:
 		return "Gray";
 	case FZ_COLORSPACE_RGB:
@@ -649,6 +659,7 @@ fz_default_colorspaces *fz_clone_default_colorspaces(fz_context *ctx, fz_default
 	default_cs->refs = 1;
 	if (base)
 	{
+		default_cs->mono = fz_keep_colorspace(ctx, base->mono);
 		default_cs->gray = fz_keep_colorspace(ctx, base->gray);
 		default_cs->rgb = fz_keep_colorspace(ctx, base->rgb);
 		default_cs->cmyk = fz_keep_colorspace(ctx, base->cmyk);
@@ -667,6 +678,7 @@ fz_drop_default_colorspaces(fz_context *ctx, fz_default_colorspaces *default_cs)
 {
 	if (fz_drop_imp(ctx, default_cs, &default_cs->refs))
 	{
+		fz_drop_colorspace(ctx, default_cs->mono);
 		fz_drop_colorspace(ctx, default_cs->gray);
 		fz_drop_colorspace(ctx, default_cs->rgb);
 		fz_drop_colorspace(ctx, default_cs->cmyk);
@@ -749,7 +761,7 @@ void fz_set_default_output_intent(fz_context *ctx, fz_default_colorspaces *defau
 		break;
 	case FZ_COLORSPACE_MONO:
 		default_cs->oi = fz_keep_colorspace(ctx, cs);
-		if (default_cs->gray == fz_device_mono(ctx))
+		if (default_cs->mono == fz_device_mono(ctx))
 			fz_set_default_mono(ctx, default_cs, cs);
 		break;
 	case FZ_COLORSPACE_GRAY:
@@ -1495,6 +1507,7 @@ fz_convert_pixmap_samples(fz_context *ctx, const fz_pixmap *src, fz_pixmap *dst,
 			switch (ss->type)
 			{
 			default: break;
+			case FZ_COLORSPACE_MONO: ss = fz_default_mono(ctx, default_cs); break;
 			case FZ_COLORSPACE_GRAY: ss = fz_default_gray(ctx, default_cs); break;
 			case FZ_COLORSPACE_RGB: ss = fz_default_rgb(ctx, default_cs); break;
 			case FZ_COLORSPACE_CMYK: ss = fz_default_cmyk(ctx, default_cs); break;

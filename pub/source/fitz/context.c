@@ -159,7 +159,7 @@ fz_drop_context(fz_context *ctx)
 
 	fz_flush_warnings(ctx);
 
-	assert(ctx->error.top == ctx->error.stack);
+	//assert(ctx->error.top == ctx->error.stack);
 
 	/* Free the context itself */
 	ctx->alloc.free(ctx->alloc.user, ctx);

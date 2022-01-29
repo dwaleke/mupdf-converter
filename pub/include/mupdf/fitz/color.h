@@ -180,6 +180,15 @@ fz_colorspace *fz_new_indexed_colorspace(fz_context *ctx, fz_colorspace *base, i
 */
 fz_colorspace *fz_new_icc_colorspace(fz_context *ctx, enum fz_colorspace_type type, int flags, const char *name, fz_buffer *buf);
 
+/**
+	Create a calibrated mono colorspace.
+
+	The returned reference should be dropped when it is finished
+	with.
+
+	Colorspaces are immutable once created.
+*/
+fz_colorspace* fz_new_cal_mono_colorspace(fz_context* ctx, float wp[3], float bp[3], float gamma);
 
 /**
 	Create a calibrated gray colorspace.
@@ -246,6 +255,7 @@ int fz_colorspace_is_lab(fz_context *ctx, fz_colorspace *cs);
 int fz_colorspace_is_indexed(fz_context *ctx, fz_colorspace *cs);
 int fz_colorspace_is_device_n(fz_context *ctx, fz_colorspace *cs);
 int fz_colorspace_is_device(fz_context *ctx, fz_colorspace *cs);
+int fz_colorspace_is_device_mono(fz_context* ctx, fz_colorspace* cs);
 int fz_colorspace_is_device_gray(fz_context *ctx, fz_colorspace *cs);
 int fz_colorspace_is_device_cmyk(fz_context *ctx, fz_colorspace *cs);
 int fz_colorspace_is_lab_icc(fz_context *ctx, fz_colorspace *cs);

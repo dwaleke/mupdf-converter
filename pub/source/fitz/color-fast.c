@@ -181,9 +181,9 @@ fz_lookup_fast_color_converter(fz_context *ctx, fz_colorspace *ss, fz_colorspace
 	int stype = ss->type;
 	int dtype = ds->type;
 
-	if (stype == FZ_COLORSPACE_GRAY)
+	if (stype == FZ_COLORSPACE_GRAY || stype == FZ_COLORSPACE_MONO)
 	{
-		if (dtype == FZ_COLORSPACE_GRAY) return gray_to_gray;
+		if (dtype == FZ_COLORSPACE_GRAY || dtype == FZ_COLORSPACE_MONO) return gray_to_gray;
 		if (dtype == FZ_COLORSPACE_RGB) return gray_to_rgb;
 		if (dtype == FZ_COLORSPACE_BGR) return gray_to_rgb;
 		if (dtype == FZ_COLORSPACE_CMYK) return gray_to_cmyk;
@@ -191,7 +191,7 @@ fz_lookup_fast_color_converter(fz_context *ctx, fz_colorspace *ss, fz_colorspace
 
 	else if (stype == FZ_COLORSPACE_RGB)
 	{
-		if (dtype == FZ_COLORSPACE_GRAY) return rgb_to_gray;
+		if (dtype == FZ_COLORSPACE_GRAY || dtype == FZ_COLORSPACE_MONO) return rgb_to_gray;
 		if (dtype == FZ_COLORSPACE_RGB) return rgb_to_rgb;
 		if (dtype == FZ_COLORSPACE_BGR) return rgb_to_bgr;
 		if (dtype == FZ_COLORSPACE_CMYK) return rgb_to_cmyk;
@@ -199,7 +199,7 @@ fz_lookup_fast_color_converter(fz_context *ctx, fz_colorspace *ss, fz_colorspace
 
 	else if (stype == FZ_COLORSPACE_BGR)
 	{
-		if (dtype == FZ_COLORSPACE_GRAY) return bgr_to_gray;
+		if (dtype == FZ_COLORSPACE_GRAY || dtype == FZ_COLORSPACE_MONO) return bgr_to_gray;
 		if (dtype == FZ_COLORSPACE_RGB) return rgb_to_bgr;
 		if (dtype == FZ_COLORSPACE_BGR) return rgb_to_rgb;
 		if (dtype == FZ_COLORSPACE_CMYK) return bgr_to_cmyk;
@@ -207,7 +207,7 @@ fz_lookup_fast_color_converter(fz_context *ctx, fz_colorspace *ss, fz_colorspace
 
 	else if (stype == FZ_COLORSPACE_CMYK)
 	{
-		if (dtype == FZ_COLORSPACE_GRAY) return cmyk_to_gray;
+		if (dtype == FZ_COLORSPACE_GRAY || dtype == FZ_COLORSPACE_MONO) return cmyk_to_gray;
 		if (dtype == FZ_COLORSPACE_RGB) return cmyk_to_rgb;
 		if (dtype == FZ_COLORSPACE_BGR) return cmyk_to_bgr;
 		if (dtype == FZ_COLORSPACE_CMYK) return cmyk_to_cmyk;
@@ -215,7 +215,7 @@ fz_lookup_fast_color_converter(fz_context *ctx, fz_colorspace *ss, fz_colorspace
 
 	else if (stype == FZ_COLORSPACE_LAB)
 	{
-		if (dtype == FZ_COLORSPACE_GRAY) return lab_to_gray;
+		if (dtype == FZ_COLORSPACE_GRAY || dtype == FZ_COLORSPACE_MONO) return lab_to_gray;
 		if (dtype == FZ_COLORSPACE_RGB) return lab_to_rgb;
 		if (dtype == FZ_COLORSPACE_BGR) return lab_to_bgr;
 		if (dtype == FZ_COLORSPACE_CMYK) return lab_to_cmyk;

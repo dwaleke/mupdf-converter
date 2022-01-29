@@ -561,11 +561,11 @@ typedef struct
 typedef struct
 {
 	fz_error_stack_slot *top;
-	fz_error_stack_slot stack[32768]; /* DW: increase the stack size from 256, needed for some PDFs */
+	fz_error_stack_slot stack[8192]; /* DW: increase the stack size from 256, needed for some PDFs */
 	int errcode;
 	void *print_user;
 	void (*print)(void *user, const char *message);
-	char message[32768]; /* DW: increase the stack size from 256, needed for some PDFs */
+	char message[8192]; /* DW: increase the stack size from 256, needed for some PDFs */
 } fz_error_context;
 
 typedef struct
