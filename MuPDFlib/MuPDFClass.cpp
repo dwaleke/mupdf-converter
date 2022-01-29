@@ -2,6 +2,7 @@
 
 void MuPDFClass::CleanUp()
 {
+	fz_context* ctx = _ctx;
 	if (_CurrentPage > 0)
 	{
 		fz_drop_page(_ctx, _page);
@@ -20,9 +21,9 @@ void MuPDFClass::CleanUp()
 		_FromStream = false;
 		_source = NULL;
 	}
-	//dw//_ctx->error.top = -1;//Hack to prevent errors on dispose.
-	fz_drop_context(_ctx);
-	_ctx = NULL;
+	//_ctx->error.top = -1; //Hack to prevent errors on dispose.
+	fz_drop_context(ctx);
+	ctx = NULL;
 	_CurrentPage = -1;
 	_CurrentPageWidth = NULL;
 	_CurrentPageHeight = NULL;
@@ -131,8 +132,6 @@ unsigned char* MuPDFClass::GetBitmap(int & width, int & height, float dpiX, floa
 	fz_irect ibounds;
 	fz_pixmap* pix;
 	fz_device *dev;
-	fz_separations* seps = NULL;
-	fz_cookie cookie = { 0 };
 
 	float zoomX;
 	float zoomY;
@@ -201,17 +200,21 @@ unsigned char* MuPDFClass::GetBitmap(int & width, int & height, float dpiX, floa
 		zoomY = height / (pdfHeight);
 	}
 	ctm = fz_rotate(rotation);
-	fz_pre_scale(ctm, zoomX, zoomY);
+	ctm = fz_pre_scale(ctm, zoomX, zoomY);//dw
+
+	//ctm = fz_transform_page(bounds, 72, rotation);//72 = no resolution change with this method.
+	//ctm = fz_pre_scale(ctm, zoomX, zoomY);//dw
 	
 	tbounds = fz_transform_rect(bounds, ctm);
 	ibounds = fz_round_rect(tbounds);
-	//ibounds = fz_round_rect(tbounds);
+	tbounds = fz_rect_from_irect(ibounds);
+
+	ibounds = fz_round_rect(tbounds);
 	tbounds = fz_rect_from_irect(ibounds);
 
 	fz_try(_ctx)
 	{
-		seps = fz_page_separations(_ctx, _page);
-		pix = fz_new_pixmap_with_bbox(_ctx, destcolor, ibounds, seps, 1);//dw
+		pix = fz_new_pixmap_with_bbox(_ctx, destcolor, ibounds, nullptr, 1);//dw
 
 		if (!pix)
 			return NULL;
@@ -221,10 +224,8 @@ unsigned char* MuPDFClass::GetBitmap(int & width, int & height, float dpiX, floa
 		fz_clear_pixmap_with_value(_ctx, pix, 255);
 
 		dev = fz_new_draw_device(_ctx, fz_identity, pix);
-		fz_enable_device_hints(_ctx, dev, FZ_NO_CACHE);
-
-		//fz_run_page(_ctx, _page, dev, &ctm, NULL);
-		fz_run_page_contents(_ctx, _page, dev, fz_identity, &cookie);
+		//fz_enable_device_hints(_ctx, dev, FZ_NO_CACHE);
+		fz_run_page(_ctx, _page, dev, ctm, nullptr);
 		fz_close_device(_ctx, dev);
 		fz_drop_device(_ctx, dev);
 		dev = NULL;
@@ -275,11 +276,6 @@ unsigned char* MuPDFClass::GetBitmap(int & width, int & height, float dpiX, floa
 	}
 	fz_always(_ctx)
 	{
-		if (seps != NULL)
-		{
-			fz_drop_separations(_ctx, seps);
-			seps = NULL;
-		}
 		fz_drop_device(_ctx, dev);
 		fz_drop_pixmap(_ctx, pix);
 		dev = NULL;
